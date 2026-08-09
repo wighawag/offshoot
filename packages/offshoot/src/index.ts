@@ -65,6 +65,8 @@ export {CASE_FUNCTIONS, DEFAULT_VARIANTS, variantsOf, variantPairs} from "./case
 export {readState, serializeState, stateFile, STATE_FILE, STATE_VERSION} from "./state.js";
 export {parseSource, resolveRef, downloadTemplate} from "./source.js";
 export {createLogger, silentLogger} from "./logger.js";
+export {askAnswers, initialFor, validateValue} from "./prompt.js";
+export type {AskOptions} from "./prompt.js";
 export {detectPackageManager, refreshLockfile} from "./package-manager.js";
 export type {PackageManager, PackageManagerName} from "./package-manager.js";
 

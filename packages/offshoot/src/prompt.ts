@@ -10,8 +10,23 @@ export interface AskOptions {
 	prompts: PromptSpec[];
 	/** Pre-supplied answers (positional args, --answer flags, saved state). */
 	provided: Answers;
+	/**
+	 * Overrides the `initial` of a prompt without answering it. Unlike
+	 * `provided`, the user is still asked; they just see a better suggestion.
+	 *
+	 * This is what a per-template wrapper needs: `create-jolly-roger` wants to
+	 * suggest "my-onchain-app", which is an opinion belonging to the wrapper,
+	 * not to the template.
+	 */
+	defaults?: Answers;
 	/** Never prompt; fail if an answer is missing and has no initial value. */
 	nonInteractive?: boolean;
+}
+
+/** The suggestion shown for a prompt: a caller default beats the template's. */
+export function initialFor(spec: PromptSpec, defaults?: Answers): AnswerValue | undefined {
+	const override = defaults?.[spec.name];
+	return override !== undefined ? override : spec.initial;
 }
 
 export async function askAnswers(options: AskOptions): Promise<Answers> {
@@ -19,9 +34,11 @@ export async function askAnswers(options: AskOptions): Promise<Answers> {
 	const missing = options.prompts.filter((p) => answers[p.name] === undefined);
 
 	for (const spec of missing) {
+		const initial = initialFor(spec, options.defaults);
+
 		if (options.nonInteractive || !process.stdin.isTTY) {
-			if (spec.initial !== undefined) {
-				answers[spec.name] = spec.initial;
+			if (initial !== undefined) {
+				answers[spec.name] = initial;
 				continue;
 			}
 			throw new Error(
@@ -35,7 +52,7 @@ export async function askAnswers(options: AskOptions): Promise<Answers> {
 				type: spec.type === "confirm" ? "confirm" : spec.type === "select" ? "select" : "text",
 				name: spec.name,
 				message: spec.message ?? `${spec.name}:`,
-				initial: spec.initial as string | undefined,
+				initial: initial as string | undefined,
 				choices: spec.choices?.map((c) => ({title: c.title, value: c.value})),
 				validate: toValidator(spec),
 			},

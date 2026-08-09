@@ -36,6 +36,14 @@ export interface ScaffoldOptions {
 	dir?: string;
 	/** Pre-supplied answers; anything missing is prompted for. */
 	answers?: Answers;
+	/**
+	 * Suggestions for prompts the user will still be asked. A per-template
+	 * wrapper uses this to offer a name that suits its template, without
+	 * pinning it and without the template needing an offshoot config:
+	 *
+	 *   scaffold({template: "wighawag/jolly-roger", argv, defaults: {name: "my-onchain-app"}})
+	 */
+	defaults?: Answers;
 	ref?: string;
 	cwd?: string;
 	/** Proceed despite a failed uniqueness check. */
@@ -150,6 +158,7 @@ export async function scaffold(options: ScaffoldOptions): Promise<ScaffoldResult
 		const answers = await askAnswers({
 			prompts: prepared.config.prompts,
 			provided,
+			defaults: options.defaults,
 			nonInteractive: options.nonInteractive ?? parsed.nonInteractive,
 		});
 

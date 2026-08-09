@@ -540,6 +540,18 @@ import {scaffold} from "offshoot";
 scaffold({template: "wighawag/jolly-roger", argv: process.argv.slice(2)});
 ```
 
+A wrapper can also suggest a name that suits its template, without pinning it and without the template needing an offshoot config at all:
+
+```js
+scaffold({
+  template: "wighawag/jolly-roger",
+  argv: process.argv.slice(2),
+  defaults: {name: "my-onchain-app"},   // a suggestion; the user is still asked
+});
+```
+
+`defaults` differs from `answers`: `answers` supplies a value and skips the question, `defaults` only changes what is offered. That keeps the opinion where it belongs (the wrapper knows it scaffolds onchain apps; the template does not need to).
+
 Per-template wrappers stay owned by the template author, and a project scaffolded through one updates with plain `offshoot`, with the `create-*` package absent entirely (asserted by a test).
 
 ## Migrating `create-jolly-roger`
