@@ -1,0 +1,35 @@
+{
+  "name": "offshoot-monorepo",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@10.28.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "---------------------- VERIFY --------------------": "",
+    "changeset": "changeset",
+    "changeset:check": "changeset status --since=main",
+    "typecheck": "pnpm -r typecheck",
+    "---------------------- PUBLISH --------------------": "",
+    "prepublishOnly": "pnpm build && pnpm test",
+    "release": "pnpm prepublishOnly && git push --all && pnpm changeset publish && git push --tags",
+    "release:ci": "pnpm prepublishOnly && pnpm changeset publish",
+    "---------------------- DEV ----------------------": "",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "@types/node": "^22.13.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

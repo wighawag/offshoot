@@ -1,0 +1,46 @@
+{
+  "name": "create-offshoot",
+  "version": "0.0.0",
+  "description": "Generic initializer for offshoot: npm create offshoot <template> [dir]",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ronan Sandford",
+  "keywords": [
+    "create",
+    "initializer",
+    "scaffold",
+    "template",
+    "offshoot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wighawag/offshoot.git",
+    "directory": "packages/create-offshoot"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "create-offshoot": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"create-offshoot: covered by the offshoot integration suite\""
+  },
+  "dependencies": {
+    "offshoot": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "typescript": "^5.7.3"
+  }
+}

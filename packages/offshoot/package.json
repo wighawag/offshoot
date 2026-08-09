@@ -1,0 +1,70 @@
+{
+  "name": "offshoot",
+  "version": "0.0.0",
+  "description": "Scaffold projects from git templates, then pull in template improvements later via real git merges.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ronan Sandford",
+  "keywords": [
+    "scaffold",
+    "template",
+    "boilerplate",
+    "generator",
+    "git",
+    "merge",
+    "update",
+    "copier",
+    "cruft"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wighawag/offshoot.git",
+    "directory": "packages/offshoot"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "offshoot": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepublishOnly": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "change-case": "^5.4.4",
+    "eta": "^4.6.0",
+    "giget": "^3.3.1",
+    "jiti": "^2.4.2",
+    "picomatch": "^4.0.2",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "@types/picomatch": "^3.0.2",
+    "@types/prompts": "^2.4.9",
+    "change-case-4": "npm:change-case@^4.1.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
