@@ -1,6 +1,6 @@
 {
   "name": "create-offshoot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generic initializer for offshoot: npm create offshoot <template> [dir]",
   "type": "module",
   "license": "MIT",
