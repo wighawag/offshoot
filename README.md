@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/wighawag/offshoot/main/assets/logo.svg" alt="offshoot" width="284" height="96">
+</p>
+
 # offshoot
 
 Scaffold a project from a git template, then pull in template improvements later via **real git merges**.

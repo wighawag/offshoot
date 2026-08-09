@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="offshoot" fill="none">
+	<title>offshoot</title>
+	<!-- Single colour, inheriting currentColor: for favicons, docs and anywhere
+	     the surrounding theme decides. No background, so it works on either. -->
+	<g stroke="currentColor" fill="currentColor">
+		<!-- the template branch: a stem of successive snapshots -->
+		<path d="M21 54 V 13" stroke-width="3.4" stroke-linecap="round" fill="none" />
+		<circle cx="21" cy="54" r="3.4" stroke="none" />
+		<circle cx="21" cy="13" r="3.4" stroke="none" />
+		<!-- the offshoot: your project, branching away and growing on its own -->
+		<path d="M21 41 C 21 31, 27 26, 35 24" stroke-width="3.4" stroke-linecap="round" fill="none" />
+		<!-- leaf, outlined rather than filled so the midrib reads in one colour -->
+		<path d="M34 25 C 39 16, 46 11, 53 11 C 53 18, 48 27, 34 25 Z" stroke-width="2.6" stroke-linejoin="round" fill="none" />
+		<path d="M37 24.4 C 43 20, 48 16, 51.5 12.5" stroke-width="2.2" stroke-linecap="round" fill="none" />
+		<!-- the branch point, where the two meet -->
+		<circle cx="21" cy="41" r="4.6" stroke="none" />
+	</g>
+</svg>
