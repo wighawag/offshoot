@@ -12,9 +12,11 @@
     "---------------------- VERIFY --------------------": "",
     "changeset": "changeset",
     "changeset:check": "changeset status --since=main",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "pnpm -r typecheck",
     "---------------------- PUBLISH --------------------": "",
-    "prepublishOnly": "pnpm build && pnpm test",
+    "prepublishOnly": "pnpm format:check && pnpm build && pnpm test",
     "release": "pnpm prepublishOnly && git push --all && pnpm changeset publish && git push --tags",
     "release:ci": "pnpm prepublishOnly && pnpm changeset publish",
     "---------------------- DEV ----------------------": "",
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
     "@types/node": "^22.13.1",
+    "prettier": "^3.8.4",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   }
