@@ -1,6 +1,6 @@
 {
   "name": "offshoot",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Scaffold projects from git templates, then pull in template improvements later via real git merges.",
   "type": "module",
   "license": "MIT",
