@@ -50,13 +50,17 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
-      - name: Typecheck
-        run: pnpm typecheck
-
-      # Before the tests: several of them exercise the built dist/cli.js the
-      # way a user would, rather than importing src.
+      # Must come before BOTH of the next two steps, and on a clean checkout
+      # this is load-bearing rather than an optimisation:
+      #  - create-offshoot imports `offshoot`, so it typechecks against that
+      #    package's emitted dist/index.d.ts, which does not exist yet;
+      #  - several tests exercise the built dist/cli.js the way a user would,
+      #    rather than importing src.
       - name: Build
         run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
 
       - name: Test
         run: pnpm test

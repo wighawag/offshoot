@@ -594,9 +594,15 @@ A pnpm workspace publishing two packages, both MIT:
 
 ```bash
 pnpm install
-pnpm build
+pnpm build       # before typecheck and test, not just for a release
+pnpm typecheck
 pnpm test        # integration tests use real git repos in temp dirs
 ```
+
+`pnpm build` genuinely has to come first on a fresh clone: `create-offshoot`
+imports `offshoot`, so it typechecks against that package's emitted
+`dist/index.d.ts`, and several tests drive the built `dist/cli.js` the way a
+user would rather than importing `src`.
 
 The jolly-roger equivalence suite needs network access and skips itself cleanly without it.
 
