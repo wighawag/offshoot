@@ -1,0 +1,67 @@
+name: ci
+
+# Runs on every PR and every push to main.
+#
+# This is NOT redundant with release.yml: that workflow only runs the test
+# suite on the publish path (when `changeset publish` actually fires, i.e. when
+# there are no pending changesets). A normal push carrying a changeset never
+# reaches it, so without this workflow a broken commit sits on main until
+# release time.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Superseded runs are worthless here, so cancel them (the opposite of
+# release.yml, where cancelling could drop a half-finished publish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from package.json engines, and current. offshoot claims
+        # Node 20+, so the claim is tested rather than assumed.
+        node-version: [20, 24]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Before the tests: several of them exercise the built dist/cli.js the
+      # way a user would, rather than importing src.
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+        env:
+          # The acceptance suite fetches the real wighawag/jolly-roger.
+          # Authenticated so shared-runner IPs are not rate limited; the suite
+          # skips itself cleanly if the fetch fails anyway.
+          GIGET_AUTH: ${{ secrets.GITHUB_TOKEN }}
