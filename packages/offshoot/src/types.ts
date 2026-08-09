@@ -52,7 +52,7 @@ export interface TransformContext {
 	log: Logger;
 }
 
-export type Operation = "scaffold" | "update" | "rename" | "doctor";
+export type Operation = 'scaffold' | 'update' | 'rename' | 'doctor';
 
 export interface Logger {
 	info(msg: string): void;
@@ -66,7 +66,11 @@ export interface Logger {
  */
 export interface Transform {
 	name: string;
-	apply(files: VirtualFile[], answers: Answers, ctx: TransformContext): VirtualFile[];
+	apply(
+		files: VirtualFile[],
+		answers: Answers,
+		ctx: TransformContext,
+	): VirtualFile[];
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +81,7 @@ export interface Transform {
 export type TransformSpec = RenameSpec | PatternsSpec | TemplateSpec;
 
 export interface RenameSpec {
-	type: "rename";
+	type: 'rename';
 	/** Overrides config.sourceName for this transform only. */
 	from?: string;
 	/** Answer key holding the target name. Default "name". */
@@ -90,17 +94,17 @@ export interface RenameSpec {
 }
 
 export type CaseVariant =
-	| "camelCase"
-	| "constantCase"
-	| "headerCase"
-	| "noCase"
-	| "paramCase"
-	| "pascalCase"
-	| "pathCase"
-	| "sentenceCase"
-	| "snakeCase"
-	| "capitalCase"
-	| "dotCase";
+	| 'camelCase'
+	| 'constantCase'
+	| 'headerCase'
+	| 'noCase'
+	| 'paramCase'
+	| 'pascalCase'
+	| 'pathCase'
+	| 'sentenceCase'
+	| 'snakeCase'
+	| 'capitalCase'
+	| 'dotCase';
 
 /** An explicit, context-anchored replacement pair. */
 export interface PatternPair {
@@ -110,14 +114,14 @@ export interface PatternPair {
 }
 
 export interface PatternsSpec {
-	type: "patterns";
+	type: 'patterns';
 	patterns: PatternPair[];
 	/** Also apply the pairs to file and directory names. Default false. */
 	paths?: boolean;
 }
 
 export interface TemplateSpec {
-	type: "template";
+	type: 'template';
 	/**
 	 * Globs the placeholder expansion is restricted to. Required: opt-in only,
 	 * so the rest of the template stays an unmarked working project.
@@ -128,7 +132,7 @@ export interface TemplateSpec {
 
 export interface PromptSpec {
 	name: string;
-	type?: "text" | "confirm" | "select";
+	type?: 'text' | 'confirm' | 'select';
 	message?: string;
 	initial?: AnswerValue;
 	choices?: {title: string; value: AnswerValue}[];
@@ -187,8 +191,9 @@ export interface OffshootConfig {
 	eject?: EjectConfig;
 }
 
-export interface ResolvedConfig
-	extends Required<Omit<OffshootConfig, "sourceName" | "transforms" | "prompts" | "eject">> {
+export interface ResolvedConfig extends Required<
+	Omit<OffshootConfig, 'sourceName' | 'transforms' | 'prompts' | 'eject'>
+> {
 	sourceName: string;
 	transforms: (TransformSpec | Transform)[];
 	prompts: PromptSpec[];

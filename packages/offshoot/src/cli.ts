@@ -3,14 +3,14 @@
  * One name per command. There is no `graft` alias.
  */
 
-import {scaffold} from "./commands/scaffold.js";
-import {update} from "./commands/update.js";
-import {check} from "./commands/check.js";
-import {rename} from "./commands/rename.js";
-import {doctor} from "./commands/doctor.js";
-import {eject} from "./commands/eject.js";
-import {createLogger} from "./logger.js";
-import {RoundTripError} from "./transforms/rename.js";
+import {scaffold} from './commands/scaffold.js';
+import {update} from './commands/update.js';
+import {check} from './commands/check.js';
+import {rename} from './commands/rename.js';
+import {doctor} from './commands/doctor.js';
+import {eject} from './commands/eject.js';
+import {createLogger} from './logger.js';
+import {RoundTripError} from './transforms/rename.js';
 
 const USAGE = `offshoot - scaffold from a git template, then merge template improvements later
 
@@ -51,81 +51,94 @@ function option(argv: string[], name: string): string | undefined {
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
 
-	if (argv.length === 0 || flag(argv, "--help") || flag(argv, "-h")) {
+	if (argv.length === 0 || flag(argv, '--help') || flag(argv, '-h')) {
 		console.log(USAGE);
 		return argv.length === 0 ? 1 : 0;
 	}
-	if (flag(argv, "--version") || flag(argv, "-v")) {
-		const {readFileSync} = await import("node:fs");
-		const {fileURLToPath} = await import("node:url");
-		const {dirname, join} = await import("node:path");
+	if (flag(argv, '--version') || flag(argv, '-v')) {
+		const {readFileSync} = await import('node:fs');
+		const {fileURLToPath} = await import('node:url');
+		const {dirname, join} = await import('node:path');
 		const here = dirname(fileURLToPath(import.meta.url));
-		const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {version: string};
+		const pkg = JSON.parse(
+			readFileSync(join(here, '..', 'package.json'), 'utf8'),
+		) as {version: string};
 		console.log(pkg.version);
 		return 0;
 	}
 
 	const command = argv[0];
 	const rest = argv.slice(1);
-	const log = createLogger({verbose: flag(rest, "--verbose")});
-	const cleaned = rest.filter((a) => a !== "--verbose");
+	const log = createLogger({verbose: flag(rest, '--verbose')});
+	const cleaned = rest.filter((a) => a !== '--verbose');
 
 	switch (command) {
-		case "new": {
-			const template = cleaned.find((a) => !a.startsWith("-"));
+		case 'new': {
+			const template = cleaned.find((a) => !a.startsWith('-'));
 			if (!template) {
-				console.error("offshoot new <template> [dir]");
+				console.error('offshoot new <template> [dir]');
 				return 1;
 			}
 			const index = cleaned.indexOf(template);
-			const forwarded = [...cleaned.slice(0, index), ...cleaned.slice(index + 1)];
+			const forwarded = [
+				...cleaned.slice(0, index),
+				...cleaned.slice(index + 1),
+			];
 			await scaffold({template, argv: forwarded, log});
 			return 0;
 		}
 
-		case "update": {
+		case 'update': {
 			const result = await update({
 				cwd: process.cwd(),
-				ref: option(cleaned, "--ref"),
-				force: flag(cleaned, "--force"),
+				ref: option(cleaned, '--ref'),
+				force: flag(cleaned, '--force'),
 				log,
 			});
 			return result.conflicted.length > 0 ? 1 : 0;
 		}
 
-		case "check": {
-			const result = await check({cwd: process.cwd(), ref: option(cleaned, "--ref"), log});
+		case 'check': {
+			const result = await check({
+				cwd: process.cwd(),
+				ref: option(cleaned, '--ref'),
+				log,
+			});
 			return result.behind ? 1 : 0;
 		}
 
-		case "rename": {
-			const newName = cleaned.find((a) => !a.startsWith("-"));
+		case 'rename': {
+			const newName = cleaned.find((a) => !a.startsWith('-'));
 			if (!newName) {
-				console.error("offshoot rename <newName>");
+				console.error('offshoot rename <newName>');
 				return 1;
 			}
 			const result = await rename({
 				cwd: process.cwd(),
 				newName,
-				force: flag(cleaned, "--force"),
+				force: flag(cleaned, '--force'),
 				log,
 			});
 			return result.conflicted.length > 0 ? 1 : 0;
 		}
 
-		case "doctor": {
+		case 'doctor': {
 			const result = await doctor({
-				cwd: option(cleaned, "--cwd") ?? process.cwd(),
-				sourceName: option(cleaned, "--source-name"),
-				name: option(cleaned, "--name"),
-				strict: flag(cleaned, "--strict"),
+				cwd: option(cleaned, '--cwd') ?? process.cwd(),
+				sourceName: option(cleaned, '--source-name'),
+				name: option(cleaned, '--name'),
+				strict: flag(cleaned, '--strict'),
 				log,
 			});
 			return result.ok ? 0 : 1;
 		}
 
-		case "eject": {
-			await eject({cwd: process.cwd(), noCommit: flag(cleaned, "--no-commit"), log});
+		case 'eject': {
+			await eject({
+				cwd: process.cwd(),
+				noCommit: flag(cleaned, '--no-commit'),
+				log,
+			});
 			return 0;
 		}
 

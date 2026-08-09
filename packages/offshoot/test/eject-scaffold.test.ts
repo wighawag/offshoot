@@ -6,15 +6,18 @@
  * commit, one branch, no state file, and no dependency on offshoot.
  */
 
-import {afterAll, describe, expect, it} from "vitest";
-import {execFileSync} from "node:child_process";
-import {fileURLToPath} from "node:url";
-import {dirname, resolve} from "node:path";
-import {scaffold, parseScaffoldArgs} from "../src/commands/scaffold.js";
-import {update} from "../src/commands/update.js";
-import {eject} from "../src/commands/eject.js";
-import {detectIndent, isPackageJson} from "../src/transforms/eject-integration.js";
-import {detectPackageManager} from "../src/package-manager.js";
+import {afterAll, describe, expect, it} from 'vitest';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {dirname, resolve} from 'node:path';
+import {scaffold, parseScaffoldArgs} from '../src/commands/scaffold.js';
+import {update} from '../src/commands/update.js';
+import {eject} from '../src/commands/eject.js';
+import {
+	detectIndent,
+	isPackageJson,
+} from '../src/transforms/eject-integration.js';
+import {detectPackageManager} from '../src/package-manager.js';
 import {
 	cleanupTempDirs,
 	createTemplateRepo,
@@ -26,121 +29,143 @@ import {
 	tempDir,
 	trackedFiles,
 	writeFile,
-} from "./helpers.js";
+} from './helpers.js';
 
 afterAll(cleanupTempDirs);
 
 const here = dirname(fileURLToPath(import.meta.url));
-const CLI = resolve(here, "..", "dist", "cli.js");
+const CLI = resolve(here, '..', 'dist', 'cli.js');
 
 /** A template that ships a real offshoot integration, as an author would. */
 function integratedTemplate() {
 	return createTemplateRepo({
-		"offshoot.config.json": JSON.stringify(
+		'offshoot.config.json': JSON.stringify(
 			{
-				sourceName: "demo-template",
+				sourceName: 'demo-template',
 				eject: {
-					exclude: ["UPDATING.md", ".github/workflows/template-update.yml"],
-					packageJson: {devDependencies: ["some-update-helper"], scripts: ["check:template"]},
+					exclude: ['UPDATING.md', '.github/workflows/template-update.yml'],
+					packageJson: {
+						devDependencies: ['some-update-helper'],
+						scripts: ['check:template'],
+					},
 				},
 			},
 			null,
 			2,
 		),
-		"package.json":
+		'package.json':
 			JSON.stringify(
 				{
-					name: "demo-template",
-					version: "0.0.0",
+					name: 'demo-template',
+					version: '0.0.0',
 					scripts: {
-						build: "tsc",
-						update: "offshoot update",
-						"check:template": "offshoot check",
+						build: 'tsc',
+						update: 'offshoot update',
+						'check:template': 'offshoot check',
 					},
-					devDependencies: {offshoot: "^0.1.0", "some-update-helper": "^1.0.0", typescript: "^5.7.3"},
+					devDependencies: {
+						offshoot: '^0.1.0',
+						'some-update-helper': '^1.0.0',
+						typescript: '^5.7.3',
+					},
 				},
 				null,
 				2,
-			) + "\n",
+			) + '\n',
 		// A monorepo package, with tabs, to prove formatting is preserved.
-		"web/package.json": '{\n\t"name": "demo-template-web",\n\t"devDependencies": {\n\t\t"offshoot": "^0.1.0",\n\t\t"vite": "^6.0.0"\n\t}\n}\n',
-		"src/index.ts": 'export const NAME = "demo-template";\n',
-		"UPDATING.md": "# How to update demo-template\n",
-		".github/workflows/template-update.yml": "name: template update\n",
-		"README.md": "# Demo Template\n",
+		'web/package.json':
+			'{\n\t"name": "demo-template-web",\n\t"devDependencies": {\n\t\t"offshoot": "^0.1.0",\n\t\t"vite": "^6.0.0"\n\t}\n}\n',
+		'src/index.ts': 'export const NAME = "demo-template";\n',
+		'UPDATING.md': '# How to update demo-template\n',
+		'.github/workflows/template-update.yml': 'name: template update\n',
+		'README.md': '# Demo Template\n',
 	});
 }
 
-async function scaffoldEjected(templateDir: string, name = "my-app") {
-	const cwd = tempDir("offshoot-work-");
-	return scaffold({template: templateDir, argv: [name, "--eject"], cwd, nonInteractive: true, log: quietLog});
+async function scaffoldEjected(templateDir: string, name = 'my-app') {
+	const cwd = tempDir('offshoot-work-');
+	return scaffold({
+		template: templateDir,
+		argv: [name, '--eject'],
+		cwd,
+		nonInteractive: true,
+		log: quietLog,
+	});
 }
 
-describe("scaffolding with --eject", () => {
-	it("produces a plain repository: one branch, one commit, no template branch", async () => {
+describe('scaffolding with --eject', () => {
+	it('produces a plain repository: one branch, one commit, no template branch', async () => {
 		const template = integratedTemplate();
 		const result = await scaffoldEjected(template.dir);
 
 		expect(result.ejected).toBe(true);
 		expect(result.branch).toBeUndefined();
-		expect(result.mainBranch).toBe("main");
+		expect(result.mainBranch).toBe('main');
 
-		const branches = git(["branch", "--list"], result.dir);
-		expect(branches).toContain("main");
-		expect(branches).not.toContain("template");
+		const branches = git(['branch', '--list'], result.dir);
+		expect(branches).toContain('main');
+		expect(branches).not.toContain('template');
 
-		const log = git(["log", "--format=%s", "--all"], result.dir).trim().split("\n");
+		const log = git(['log', '--format=%s', '--all'], result.dir)
+			.trim()
+			.split('\n');
 		expect(log).toHaveLength(1);
 		expect(log[0]).toMatch(/^Initial commit from file:.*@[0-9a-f]{7}$/);
 	});
 
-	it("writes no .offshoot.json", async () => {
+	it('writes no .offshoot.json', async () => {
 		const template = integratedTemplate();
 		const result = await scaffoldEjected(template.dir);
 
-		expect(exists(result.dir, ".offshoot.json")).toBe(false);
-		expect(trackedFiles(result.dir)).not.toContain(".offshoot.json");
+		expect(exists(result.dir, '.offshoot.json')).toBe(false);
+		expect(trackedFiles(result.dir)).not.toContain('.offshoot.json');
 	});
 
-	it("removes offshoot from dependencies and scripts, with no config needed", async () => {
+	it('removes offshoot from dependencies and scripts, with no config needed', async () => {
 		// Zero-config: the template declares nothing, but a dependency named
 		// `offshoot` and a script that runs it ARE the integration.
 		const template = createTemplateRepo({
-			"package.json":
+			'package.json':
 				JSON.stringify(
 					{
-						name: "demo-template",
-						scripts: {build: "tsc", update: "offshoot update", ci: "npx offshoot check && pnpm test"},
-						devDependencies: {offshoot: "^0.1.0", typescript: "^5.7.3"},
+						name: 'demo-template',
+						scripts: {
+							build: 'tsc',
+							update: 'offshoot update',
+							ci: 'npx offshoot check && pnpm test',
+						},
+						devDependencies: {offshoot: '^0.1.0', typescript: '^5.7.3'},
 					},
 					null,
 					2,
-				) + "\n",
+				) + '\n',
 		});
 		const result = await scaffoldEjected(template.dir);
-		const pkg = JSON.parse(readFile(result.dir, "package.json")) as {
+		const pkg = JSON.parse(readFile(result.dir, 'package.json')) as {
 			scripts: Record<string, string>;
 			devDependencies: Record<string, string>;
 		};
 
-		expect(pkg.devDependencies).toEqual({typescript: "^5.7.3"});
-		expect(pkg.scripts).toEqual({build: "tsc"});
-		expect(readFile(result.dir, "package.json")).not.toContain("offshoot");
+		expect(pkg.devDependencies).toEqual({typescript: '^5.7.3'});
+		expect(pkg.scripts).toEqual({build: 'tsc'});
+		expect(readFile(result.dir, 'package.json')).not.toContain('offshoot');
 	});
 
-	it("removes what the template declares, on top of that", async () => {
+	it('removes what the template declares, on top of that', async () => {
 		const template = integratedTemplate();
 		const result = await scaffoldEjected(template.dir);
 
-		const pkg = JSON.parse(readFile(result.dir, "package.json")) as {
+		const pkg = JSON.parse(readFile(result.dir, 'package.json')) as {
 			scripts: Record<string, string>;
 			devDependencies: Record<string, string>;
 		};
-		expect(pkg.scripts).toEqual({build: "tsc"});
-		expect(pkg.devDependencies).toEqual({typescript: "^5.7.3"});
+		expect(pkg.scripts).toEqual({build: 'tsc'});
+		expect(pkg.devDependencies).toEqual({typescript: '^5.7.3'});
 
-		expect(exists(result.dir, "UPDATING.md")).toBe(false);
-		expect(exists(result.dir, ".github/workflows/template-update.yml")).toBe(false);
+		expect(exists(result.dir, 'UPDATING.md')).toBe(false);
+		expect(exists(result.dir, '.github/workflows/template-update.yml')).toBe(
+			false,
+		);
 	});
 
 	it("cleans every package.json in a monorepo, preserving each one's formatting", async () => {
@@ -148,117 +173,137 @@ describe("scaffolding with --eject", () => {
 		const result = await scaffoldEjected(template.dir);
 
 		// Tabs in, tabs out; trailing newline preserved; only the entry removed.
-		expect(readFile(result.dir, "web/package.json")).toBe(
+		expect(readFile(result.dir, 'web/package.json')).toBe(
 			'{\n\t"name": "my-app-web",\n\t"devDependencies": {\n\t\t"vite": "^6.0.0"\n\t}\n}\n',
 		);
 		// Two-space file stays two-space.
-		expect(readFile(result.dir, "package.json")).toContain('\n  "name": "my-app"');
-		expect(readFile(result.dir, "package.json").endsWith("}\n")).toBe(true);
+		expect(readFile(result.dir, 'package.json')).toContain(
+			'\n  "name": "my-app"',
+		);
+		expect(readFile(result.dir, 'package.json').endsWith('}\n')).toBe(true);
 	});
 
-	it("drops a dependency section that ends up empty", async () => {
+	it('drops a dependency section that ends up empty', async () => {
 		const template = createTemplateRepo({
-			"package.json": JSON.stringify({name: "demo-template", devDependencies: {offshoot: "^0.1.0"}}, null, 2) + "\n",
+			'package.json':
+				JSON.stringify(
+					{name: 'demo-template', devDependencies: {offshoot: '^0.1.0'}},
+					null,
+					2,
+				) + '\n',
 		});
 		const result = await scaffoldEjected(template.dir);
-		const pkg = JSON.parse(readFile(result.dir, "package.json")) as Record<string, unknown>;
+		const pkg = JSON.parse(readFile(result.dir, 'package.json')) as Record<
+			string,
+			unknown
+		>;
 
-		expect("devDependencies" in pkg).toBe(false);
-		expect(pkg.name).toBe("my-app");
+		expect('devDependencies' in pkg).toBe(false);
+		expect(pkg.name).toBe('my-app');
 	});
 
-	it("still applies the normal transforms", async () => {
+	it('still applies the normal transforms', async () => {
 		const template = integratedTemplate();
 		const result = await scaffoldEjected(template.dir);
 
-		expect(readFile(result.dir, "src/index.ts")).toBe('export const NAME = "my-app";\n');
-		expect(readFile(result.dir, "README.md")).toBe("# My App\n");
+		expect(readFile(result.dir, 'src/index.ts')).toBe(
+			'export const NAME = "my-app";\n',
+		);
+		expect(readFile(result.dir, 'README.md')).toBe('# My App\n');
 	});
 
-	it("leaves a package.json alone when there is nothing to strip", async () => {
+	it('leaves a package.json alone when there is nothing to strip', async () => {
 		const template = createTemplateRepo({
-			"package.json": '{"name":"demo-template","private":true}',
+			'package.json': '{"name":"demo-template","private":true}',
 		});
 		const result = await scaffoldEjected(template.dir);
 		// Byte-identical apart from the rename: no reformatting.
-		expect(readFile(result.dir, "package.json")).toBe('{"name":"my-app","private":true}');
+		expect(readFile(result.dir, 'package.json')).toBe(
+			'{"name":"my-app","private":true}',
+		);
 	});
 
-	it("refuses to update afterwards, with an explanation", async () => {
+	it('refuses to update afterwards, with an explanation', async () => {
 		const template = integratedTemplate();
 		const result = await scaffoldEjected(template.dir);
-		git(["config", "user.name", "u"], result.dir);
-		git(["config", "user.email", "u@e"], result.dir);
+		git(['config', 'user.name', 'u'], result.dir);
+		git(['config', 'user.email', 'u@e'], result.dir);
 
-		writeFile(template.dir, "src/index.ts", 'export const NAME = "demo-template";\nexport const v = 2;\n');
-		template.commit("template moves on");
+		writeFile(
+			template.dir,
+			'src/index.ts',
+			'export const NAME = "demo-template";\nexport const v = 2;\n',
+		);
+		template.commit('template moves on');
 
-		await expect(update({cwd: result.dir, log: quietLog})).rejects.toThrow(/--eject|offshoot eject/);
+		await expect(update({cwd: result.dir, log: quietLog})).rejects.toThrow(
+			/--eject|offshoot eject/,
+		);
 	});
 });
 
-describe("--eject does not affect a normal scaffold", () => {
-	it("keeps the integration when not ejecting", async () => {
+describe('--eject does not affect a normal scaffold', () => {
+	it('keeps the integration when not ejecting', async () => {
 		const template = integratedTemplate();
-		const cwd = tempDir("offshoot-work-");
+		const cwd = tempDir('offshoot-work-');
 		const result = await scaffold({
 			template: template.dir,
-			argv: ["my-app"],
+			argv: ['my-app'],
 			cwd,
 			nonInteractive: true,
 			log: quietLog,
 		});
 
-		expect(exists(result.dir, ".offshoot.json")).toBe(true);
-		expect(exists(result.dir, "UPDATING.md")).toBe(true);
-		expect(result.branch).toBe("template");
+		expect(exists(result.dir, '.offshoot.json')).toBe(true);
+		expect(exists(result.dir, 'UPDATING.md')).toBe(true);
+		expect(result.branch).toBe('template');
 
-		const pkg = JSON.parse(readFile(result.dir, "package.json")) as {
+		const pkg = JSON.parse(readFile(result.dir, 'package.json')) as {
 			scripts: Record<string, string>;
 			devDependencies: Record<string, string>;
 		};
-		expect(pkg.devDependencies.offshoot).toBe("^0.1.0");
-		expect(pkg.scripts.update).toBe("offshoot update");
+		expect(pkg.devDependencies.offshoot).toBe('^0.1.0');
+		expect(pkg.scripts.update).toBe('offshoot update');
 	});
 });
 
-describe("`offshoot eject` does the same thing, years later", () => {
-	it("removes the integration, not just the state file", async () => {
+describe('`offshoot eject` does the same thing, years later', () => {
+	it('removes the integration, not just the state file', async () => {
 		const template = integratedTemplate();
-		const cwd = tempDir("offshoot-work-");
+		const cwd = tempDir('offshoot-work-');
 		const project = await scaffold({
 			template: template.dir,
-			argv: ["my-app"],
+			argv: ['my-app'],
 			cwd,
 			nonInteractive: true,
 			log: quietLog,
 		});
-		git(["config", "user.name", "u"], project.dir);
-		git(["config", "user.email", "u@e"], project.dir);
+		git(['config', 'user.name', 'u'], project.dir);
+		git(['config', 'user.email', 'u@e'], project.dir);
 
 		// Linked project: everything is still there.
-		expect(readFile(project.dir, "package.json")).toContain("offshoot");
-		expect(exists(project.dir, "UPDATING.md")).toBe(true);
+		expect(readFile(project.dir, 'package.json')).toContain('offshoot');
+		expect(exists(project.dir, 'UPDATING.md')).toBe(true);
 
 		const result = await eject({cwd: project.dir, log: quietLog});
 
 		// The same end state as scaffolding with --eject.
-		expect(exists(project.dir, ".offshoot.json")).toBe(false);
+		expect(exists(project.dir, '.offshoot.json')).toBe(false);
 		expect(result.branchDeleted).toBe(true);
-		expect(git(["branch", "--list"], project.dir)).not.toContain("template");
+		expect(git(['branch', '--list'], project.dir)).not.toContain('template');
 
-		const pkg = JSON.parse(readFile(project.dir, "package.json")) as {
+		const pkg = JSON.parse(readFile(project.dir, 'package.json')) as {
 			scripts: Record<string, string>;
 			devDependencies: Record<string, string>;
 		};
-		expect(pkg.devDependencies).toEqual({typescript: "^5.7.3"});
-		expect(pkg.scripts).toEqual({build: "tsc"});
-		expect(result.removed).toContain("package.json: devDependencies.offshoot");
+		expect(pkg.devDependencies).toEqual({typescript: '^5.7.3'});
+		expect(pkg.scripts).toEqual({build: 'tsc'});
+		expect(result.removed).toContain('package.json: devDependencies.offshoot');
 
 		// Declared update-only files go too, read from the template config at
 		// the recorded ref.
-		expect(exists(project.dir, "UPDATING.md")).toBe(false);
-		expect(result.filesRemoved).toContain("UPDATING.md");
+		expect(exists(project.dir, 'UPDATING.md')).toBe(false);
+		expect(result.filesRemoved).toContain('UPDATING.md');
 
 		// And it is committed as one clean change.
 		expect(result.committed).toBe(true);
@@ -267,219 +312,251 @@ describe("`offshoot eject` does the same thing, years later", () => {
 
 	it("still works offline, removing offshoot's own traces", async () => {
 		const template = integratedTemplate();
-		const cwd = tempDir("offshoot-work-");
+		const cwd = tempDir('offshoot-work-');
 		const project = await scaffold({
 			template: template.dir,
-			argv: ["my-app"],
+			argv: ['my-app'],
 			cwd,
 			nonInteractive: true,
 			log: quietLog,
 		});
-		git(["config", "user.name", "u"], project.dir);
-		git(["config", "user.email", "u@e"], project.dir);
+		git(['config', 'user.name', 'u'], project.dir);
+		git(['config', 'user.email', 'u@e'], project.dir);
 
-		const result = await eject({cwd: project.dir, offline: true, log: quietLog});
+		const result = await eject({
+			cwd: project.dir,
+			offline: true,
+			log: quietLog,
+		});
 
 		// Automatic part still happens without the config...
-		const pkg = JSON.parse(readFile(project.dir, "package.json")) as {devDependencies: Record<string, string>};
+		const pkg = JSON.parse(readFile(project.dir, 'package.json')) as {
+			devDependencies: Record<string, string>;
+		};
 		expect(pkg.devDependencies.offshoot).toBeUndefined();
 		// ...the declared part needs the template, so it is left alone.
 		expect(result.filesRemoved).toEqual([]);
-		expect(exists(project.dir, "UPDATING.md")).toBe(true);
+		expect(exists(project.dir, 'UPDATING.md')).toBe(true);
 	});
 });
 
-describe("--eject through the CLI and wrappers", () => {
-	it("is parsed from forwarded argv, as a per-template wrapper passes it", () => {
-		expect(parseScaffoldArgs(["my-app", "--eject"])).toMatchObject({
-			positionals: ["my-app"],
+describe('--eject through the CLI and wrappers', () => {
+	it('is parsed from forwarded argv, as a per-template wrapper passes it', () => {
+		expect(parseScaffoldArgs(['my-app', '--eject'])).toMatchObject({
+			positionals: ['my-app'],
 			eject: true,
 		});
-		expect(parseScaffoldArgs(["my-app"]).eject).toBe(false);
+		expect(parseScaffoldArgs(['my-app']).eject).toBe(false);
 	});
 
-	it("accepts `eject=true`, which survives `npm create` without a -- separator", () => {
-		const parsed = parseScaffoldArgs(["my-app", "eject=true"]);
+	it('accepts `eject=true`, which survives `npm create` without a -- separator', () => {
+		const parsed = parseScaffoldArgs(['my-app', 'eject=true']);
 		expect(parsed.eject).toBe(true);
-		expect(parsed.positionals).toEqual(["my-app"]);
+		expect(parsed.positionals).toEqual(['my-app']);
 		// Reserved: it must not leak into the answers, and so into .offshoot.json.
 		expect(parsed.answers.eject).toBeUndefined();
-		expect(parseScaffoldArgs(["my-app", "eject=false"]).eject).toBe(false);
+		expect(parseScaffoldArgs(['my-app', 'eject=false']).eject).toBe(false);
 	});
 
-	it("scaffolds an ejected project from `eject=true`", async () => {
+	it('scaffolds an ejected project from `eject=true`', async () => {
 		const template = integratedTemplate();
-		const cwd = tempDir("offshoot-work-");
+		const cwd = tempDir('offshoot-work-');
 		const result = await scaffold({
 			template: template.dir,
-			argv: ["my-app", "eject=true"],
+			argv: ['my-app', 'eject=true'],
 			cwd,
 			nonInteractive: true,
 			log: quietLog,
 		});
 		expect(result.ejected).toBe(true);
-		expect(exists(result.dir, ".offshoot.json")).toBe(false);
+		expect(exists(result.dir, '.offshoot.json')).toBe(false);
 	});
 
-	it("works end to end through the built CLI", async () => {
+	it('works end to end through the built CLI', async () => {
 		const template = integratedTemplate();
-		const cwd = tempDir("offshoot-work-");
+		const cwd = tempDir('offshoot-work-');
 
 		const out = execFileSync(
 			process.execPath,
-			[CLI, "new", template.dir, "cli-app", "--eject"],
-			{cwd, encoding: "utf8"},
+			[CLI, 'new', template.dir, 'cli-app', '--eject'],
+			{cwd, encoding: 'utf8'},
 		);
 
-		expect(out).toContain("no template link");
-		expect(exists(`${cwd}/cli-app`, ".offshoot.json")).toBe(false);
-		expect(git(["branch", "--list"], `${cwd}/cli-app`)).not.toContain("template");
+		expect(out).toContain('no template link');
+		expect(exists(`${cwd}/cli-app`, '.offshoot.json')).toBe(false);
+		expect(git(['branch', '--list'], `${cwd}/cli-app`)).not.toContain(
+			'template',
+		);
 	});
 });
 
-describe("which scripts count as the integration", () => {
-	async function scriptsAfterEject(scripts: Record<string, string>): Promise<Record<string, string>> {
+describe('which scripts count as the integration', () => {
+	async function scriptsAfterEject(
+		scripts: Record<string, string>,
+	): Promise<Record<string, string>> {
 		const template = createTemplateRepo({
-			"package.json": JSON.stringify({name: "demo-template", scripts}, null, 2) + "\n",
+			'package.json':
+				JSON.stringify({name: 'demo-template', scripts}, null, 2) + '\n',
 		});
 		const result = await scaffoldEjected(template.dir);
-		const pkg = JSON.parse(readFile(result.dir, "package.json")) as {scripts?: Record<string, string>};
+		const pkg = JSON.parse(readFile(result.dir, 'package.json')) as {
+			scripts?: Record<string, string>;
+		};
 		return pkg.scripts ?? {};
 	}
 
-	it("removes invocations, in every spelling", async () => {
+	it('removes invocations, in every spelling', async () => {
 		const kept = await scriptsAfterEject({
-			bare: "offshoot update",
-			npx: "npx offshoot check",
-			pnpmExec: "pnpm exec offshoot check",
-			pinned: "npx offshoot@latest update",
-			chained: "pnpm build && offshoot check",
-			keep: "tsc",
+			bare: 'offshoot update',
+			npx: 'npx offshoot check',
+			pnpmExec: 'pnpm exec offshoot check',
+			pinned: 'npx offshoot@latest update',
+			chained: 'pnpm build && offshoot check',
+			keep: 'tsc',
 		});
-		expect(kept).toEqual({keep: "tsc"});
+		expect(kept).toEqual({keep: 'tsc'});
 	});
 
-	it("keeps scripts that merely mention the word, or a different binary", async () => {
+	it('keeps scripts that merely mention the word, or a different binary', async () => {
 		const kept = await scriptsAfterEject({
-			docs: "echo see offshoot docs for details",
-			deploy: "offshoot-deploy run",
-			lint: "eslint --rule offshoot",
+			docs: 'echo see offshoot docs for details',
+			deploy: 'offshoot-deploy run',
+			lint: 'eslint --rule offshoot',
 		});
 		expect(kept).toEqual({
-			docs: "echo see offshoot docs for details",
-			deploy: "offshoot-deploy run",
-			lint: "eslint --rule offshoot",
+			docs: 'echo see offshoot docs for details',
+			deploy: 'offshoot-deploy run',
+			lint: 'eslint --rule offshoot',
 		});
 	});
 });
 
-describe("the lockfile, after a dependency is removed", () => {
+describe('the lockfile, after a dependency is removed', () => {
 	/** A template that declares offshoot AND ships a lockfile listing it. */
 	function templateWithLockfile() {
 		return createTemplateRepo({
-			"package.json":
+			'package.json':
 				JSON.stringify(
 					{
-						name: "demo-template",
-						packageManager: "pnpm@10.28.1",
-						scripts: {update: "offshoot update"},
-						devDependencies: {offshoot: "^0.1.0"},
+						name: 'demo-template',
+						packageManager: 'pnpm@10.28.1',
+						scripts: {update: 'offshoot update'},
+						devDependencies: {offshoot: '^0.1.0'},
 					},
 					null,
 					2,
-				) + "\n",
-			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    devDependencies:\n      offshoot:\n        specifier: ^0.1.0\n        version: 0.1.0\n",
+				) + '\n',
+			'pnpm-lock.yaml':
+				"lockfileVersion: '9.0'\n\nimporters:\n  .:\n    devDependencies:\n      offshoot:\n        specifier: ^0.1.0\n        version: 0.1.0\n",
 		});
 	}
 
-	it("detects the package manager from the packageManager field", () => {
-		const dir = tempDir("offshoot-pm-");
-		writeFile(dir, "package.json", '{"packageManager": "pnpm@10.28.1"}');
-		writeFile(dir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
-		expect(detectPackageManager(dir)).toMatchObject({name: "pnpm", lockfile: "pnpm-lock.yaml", via: "packageManager field"});
+	it('detects the package manager from the packageManager field', () => {
+		const dir = tempDir('offshoot-pm-');
+		writeFile(dir, 'package.json', '{"packageManager": "pnpm@10.28.1"}');
+		writeFile(dir, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+		expect(detectPackageManager(dir)).toMatchObject({
+			name: 'pnpm',
+			lockfile: 'pnpm-lock.yaml',
+			via: 'packageManager field',
+		});
 	});
 
-	it("falls back to whichever lockfile is present", () => {
-		const npmDir = tempDir("offshoot-pm-");
-		writeFile(npmDir, "package.json", '{"name": "x"}');
-		writeFile(npmDir, "package-lock.json", "{}");
-		expect(detectPackageManager(npmDir)).toMatchObject({name: "npm", via: "lockfile"});
+	it('falls back to whichever lockfile is present', () => {
+		const npmDir = tempDir('offshoot-pm-');
+		writeFile(npmDir, 'package.json', '{"name": "x"}');
+		writeFile(npmDir, 'package-lock.json', '{}');
+		expect(detectPackageManager(npmDir)).toMatchObject({
+			name: 'npm',
+			via: 'lockfile',
+		});
 
-		const bare = tempDir("offshoot-pm-");
-		writeFile(bare, "package.json", '{"name": "x"}');
+		const bare = tempDir('offshoot-pm-');
+		writeFile(bare, 'package.json', '{"name": "x"}');
 		expect(detectPackageManager(bare)).toBeUndefined();
 	});
 
-	it("never leaves package.json and the lockfile silently disagreeing", async () => {
+	it('never leaves package.json and the lockfile silently disagreeing', async () => {
 		const template = templateWithLockfile();
 		const {dir, said} = await scaffoldEjectedCapturing(template.dir);
 
 		// package.json no longer wants offshoot...
-		expect(readFile(dir, "package.json")).not.toContain("offshoot");
+		expect(readFile(dir, 'package.json')).not.toContain('offshoot');
 
 		// ...so either the lockfile was rewritten to match, or the user was
 		// told in as many words. Silent drift is the failure mode: it breaks
 		// `pnpm install --frozen-lockfile` and `npm ci` on the first CI run.
-		if (said.includes("updated pnpm-lock.yaml")) {
-			expect(readFile(dir, "pnpm-lock.yaml")).not.toContain("offshoot");
+		if (said.includes('updated pnpm-lock.yaml')) {
+			expect(readFile(dir, 'pnpm-lock.yaml')).not.toContain('offshoot');
 		} else {
-			expect(said).toContain("pnpm-lock.yaml still references");
+			expect(said).toContain('pnpm-lock.yaml still references');
 			expect(said).toMatch(/pnpm install/);
 		}
 	});
 
-	it.runIf(hasPnpm())("rewrites the lockfile when the package manager is available", async () => {
-		const template = templateWithLockfile();
-		const {dir, said} = await scaffoldEjectedCapturing(template.dir);
+	it.runIf(hasPnpm())(
+		'rewrites the lockfile when the package manager is available',
+		async () => {
+			const template = templateWithLockfile();
+			const {dir, said} = await scaffoldEjectedCapturing(template.dir);
 
-		expect(said).toContain("updated pnpm-lock.yaml");
-		expect(readFile(dir, "pnpm-lock.yaml")).not.toContain("offshoot");
-	});
+			expect(said).toContain('updated pnpm-lock.yaml');
+			expect(readFile(dir, 'pnpm-lock.yaml')).not.toContain('offshoot');
+		},
+	);
 
-	it("does not touch the lockfile when nothing was removed", async () => {
+	it('does not touch the lockfile when nothing was removed', async () => {
 		const template = createTemplateRepo({
-			"package.json": '{\n  "name": "demo-template"\n}\n',
-			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+			'package.json': '{\n  "name": "demo-template"\n}\n',
+			'pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
 		});
 		const result = await scaffoldEjected(template.dir);
-		expect(readFile(result.dir, "pnpm-lock.yaml")).toBe("lockfileVersion: '9.0'\n");
+		expect(readFile(result.dir, 'pnpm-lock.yaml')).toBe(
+			"lockfileVersion: '9.0'\n",
+		);
 	});
 });
 
 function hasPnpm(): boolean {
 	try {
-		execFileSync("pnpm", ["--version"], {stdio: "ignore"});
+		execFileSync('pnpm', ['--version'], {stdio: 'ignore'});
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-async function scaffoldEjectedCapturing(templateDir: string): Promise<{dir: string; said: string}> {
+async function scaffoldEjectedCapturing(
+	templateDir: string,
+): Promise<{dir: string; said: string}> {
 	const messages: string[] = [];
-	const cwd = tempDir("offshoot-work-");
+	const cwd = tempDir('offshoot-work-');
 	const result = await scaffold({
 		template: templateDir,
-		argv: ["my-app", "--eject"],
+		argv: ['my-app', '--eject'],
 		cwd,
 		nonInteractive: true,
-		log: {info: (m) => messages.push(m), warn: (m) => messages.push(m), debug: () => {}},
+		log: {
+			info: (m) => messages.push(m),
+			warn: (m) => messages.push(m),
+			debug: () => {},
+		},
 	});
-	return {dir: result.dir, said: messages.join("\n")};
+	return {dir: result.dir, said: messages.join('\n')};
 }
 
-describe("eject helpers", () => {
-	it("recognises package.json at any depth", () => {
-		expect(isPackageJson("package.json")).toBe(true);
-		expect(isPackageJson("web/package.json")).toBe(true);
-		expect(isPackageJson("packages/a/package.json")).toBe(true);
-		expect(isPackageJson("my-package.json")).toBe(false);
-		expect(isPackageJson("package.json.bak")).toBe(false);
+describe('eject helpers', () => {
+	it('recognises package.json at any depth', () => {
+		expect(isPackageJson('package.json')).toBe(true);
+		expect(isPackageJson('web/package.json')).toBe(true);
+		expect(isPackageJson('packages/a/package.json')).toBe(true);
+		expect(isPackageJson('my-package.json')).toBe(false);
+		expect(isPackageJson('package.json.bak')).toBe(false);
 	});
 
-	it("detects the indentation a file already uses", () => {
+	it('detects the indentation a file already uses', () => {
 		expect(detectIndent('{\n  "a": 1\n}')).toBe(2);
-		expect(detectIndent('{\n\t"a": 1\n}')).toBe("\t");
+		expect(detectIndent('{\n\t"a": 1\n}')).toBe('\t');
 		expect(detectIndent('{\n    "a": 1\n}')).toBe(4);
 		expect(detectIndent('{"a":1}')).toBe(2);
 	});

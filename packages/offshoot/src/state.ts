@@ -8,12 +8,12 @@
  * install).
  */
 
-import {existsSync, readFileSync} from "node:fs";
-import {basename, join} from "node:path";
-import {findConfigFile} from "./config.js";
-import type {Answers, OffshootState, VirtualFile} from "./types.js";
+import {existsSync, readFileSync} from 'node:fs';
+import {basename, join} from 'node:path';
+import {findConfigFile} from './config.js';
+import type {Answers, OffshootState, VirtualFile} from './types.js';
 
-export const STATE_FILE = ".offshoot.json";
+export const STATE_FILE = '.offshoot.json';
 
 /** Bumped only if the shape changes; `adopt` will need to read old shapes. */
 export const STATE_VERSION = 1;
@@ -45,13 +45,23 @@ export function readState(root: string): OffshootState {
 	}
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(file, "utf8"));
+		parsed = JSON.parse(readFileSync(file, 'utf8'));
 	} catch (err) {
-		throw new Error(`${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+		throw new Error(
+			`${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 	const state = parsed as Partial<OffshootState>;
-	if (!state || typeof state !== "object" || !state.template || !state.ref || !state.sourceName) {
-		throw new Error(`${file} is missing required fields (template, ref, sourceName).`);
+	if (
+		!state ||
+		typeof state !== 'object' ||
+		!state.template ||
+		!state.ref ||
+		!state.sourceName
+	) {
+		throw new Error(
+			`${file} is missing required fields (template, ref, sourceName).`,
+		);
 	}
 	return {
 		template: state.template,
@@ -95,7 +105,7 @@ function sortAnswers(answers: Answers): Answers {
 export function stateFile(state: OffshootState): VirtualFile {
 	return {
 		path: STATE_FILE,
-		content: Buffer.from(serializeState(state), "utf8"),
+		content: Buffer.from(serializeState(state), 'utf8'),
 		executable: false,
 		binary: false,
 		skip: true,

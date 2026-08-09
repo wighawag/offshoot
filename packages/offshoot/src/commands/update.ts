@@ -14,13 +14,19 @@
  * branch.
  */
 
-import {resolve} from "node:path";
-import type {Answers, Logger, OffshootState} from "../types.js";
-import {createLogger} from "../logger.js";
-import {variantsOf} from "../case-variants.js";
-import * as g from "../git.js";
-import {commitMessageFor, commitSnapshot, openProject, prepareTemplate, transformForState} from "./common.js";
-import {STATE_FILE} from "../state.js";
+import {resolve} from 'node:path';
+import type {Answers, Logger, OffshootState} from '../types.js';
+import {createLogger} from '../logger.js';
+import {variantsOf} from '../case-variants.js';
+import * as g from '../git.js';
+import {
+	commitMessageFor,
+	commitSnapshot,
+	openProject,
+	prepareTemplate,
+	transformForState,
+} from './common.js';
+import {STATE_FILE} from '../state.js';
 
 export interface UpdateOptions {
 	cwd: string;
@@ -60,7 +66,7 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 	assertNoNameDrift(root, state, branch, mainBranch);
 
 	const track = options.ref ?? state.track;
-	log.info(`Checking ${state.template}${track ? `#${track}` : ""} ...`);
+	log.info(`Checking ${state.template}${track ? `#${track}` : ''} ...`);
 	const prepared = await prepareTemplate(state.template, track);
 
 	try {
@@ -74,25 +80,30 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 				branch,
 				mainBranch,
 				conflicted: [],
-				message: "already up to date",
+				message: 'already up to date',
 			};
 		}
 
 		const nextState: OffshootState = {
 			...state,
 			ref: prepared.sha,
-			track: options.ref && !isFloating(options.ref) ? state.track : (prepared.track ?? state.track),
+			track:
+				options.ref && !isFloating(options.ref)
+					? state.track
+					: (prepared.track ?? state.track),
 			sourceName: prepared.config.sourceName,
 			// The branch name is fixed at scaffold time: it names a real git
 			// branch in this repository, so a later template config cannot move it.
 			branch: state.branch,
 		};
 
-		log.info(`Updating ${state.ref.slice(0, 7)} -> ${prepared.sha.slice(0, 7)} ...`);
+		log.info(
+			`Updating ${state.ref.slice(0, 7)} -> ${prepared.sha.slice(0, 7)} ...`,
+		);
 		const files = transformForState({
 			prepared,
 			state: nextState,
-			operation: "update",
+			operation: 'update',
 			force: options.force,
 			log,
 		});
@@ -109,14 +120,14 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 			});
 		} catch (err) {
 			// Never strand the user on the template branch.
-			g.gitTry(["checkout", "--force", mainBranch], root);
+			g.gitTry(['checkout', '--force', mainBranch], root);
 			throw err;
 		}
 
-		g.git(["checkout", mainBranch], root);
+		g.git(['checkout', mainBranch], root);
 
 		if (!snapshot.changed) {
-			log.info("Template produced an identical snapshot; nothing to merge.");
+			log.info('Template produced an identical snapshot; nothing to merge.');
 			return {
 				updated: false,
 				upToDate: true,
@@ -125,19 +136,23 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 				branch,
 				mainBranch,
 				conflicted: [],
-				message: "no changes",
+				message: 'no changes',
 			};
 		}
 
-		const outcome = g.merge(root, branch, `offshoot: update to ${state.template}@${prepared.sha.slice(0, 7)}`);
+		const outcome = g.merge(
+			root,
+			branch,
+			`offshoot: update to ${state.template}@${prepared.sha.slice(0, 7)}`,
+		);
 
 		if (!outcome.ok) {
-			log.warn("");
+			log.warn('');
 			log.warn(`Merge conflicts in ${outcome.conflicted.length} file(s):`);
 			for (const f of outcome.conflicted) log.warn(`  ${f}`);
-			log.warn("");
-			log.warn("Resolve them, then:  git add -A && git commit");
-			log.warn("Or back out entirely with:  git merge --abort");
+			log.warn('');
+			log.warn('Resolve them, then:  git add -A && git commit');
+			log.warn('Or back out entirely with:  git merge --abort');
 			return {
 				updated: false,
 				upToDate: false,
@@ -146,11 +161,11 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 				branch,
 				mainBranch,
 				conflicted: outcome.conflicted,
-				message: "merge conflicts",
+				message: 'merge conflicts',
 			};
 		}
 
-		log.info("");
+		log.info('');
 		log.info(`Updated to ${state.template}@${prepared.sha.slice(0, 7)}.`);
 		return {
 			updated: true,
@@ -160,7 +175,7 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 			branch,
 			mainBranch,
 			conflicted: [],
-			message: "updated",
+			message: 'updated',
 		};
 	} finally {
 		prepared.cleanup();
@@ -188,7 +203,7 @@ export function assertNoNameDrift(
 		const drifted = driftedAnswers(state.answers, templateState.answers);
 		if (drifted.length > 0) {
 			throw new Error(
-				`${STATE_FILE} on "${mainBranch}" disagrees with branch "${branch}" for: ${drifted.join(", ")}.\n` +
+				`${STATE_FILE} on "${mainBranch}" disagrees with branch "${branch}" for: ${drifted.join(', ')}.\n` +
 					`The template branch has not been re-transformed with the current answers.\n` +
 					`Run \`offshoot rename <newName>\` (for a name change) instead of editing ${STATE_FILE} by hand.`,
 			);
@@ -196,7 +211,7 @@ export function assertNoNameDrift(
 	}
 
 	const name = state.answers.name;
-	if (typeof name !== "string" || name === "") return;
+	if (typeof name !== 'string' || name === '') return;
 
 	const terms = variantsOf(name);
 	const onTemplate = filesContaining(root, branch, terms);
@@ -223,7 +238,7 @@ function driftedAnswers(mine: Answers, theirs: Answers): string[] {
 }
 
 function readStateAt(root: string, rev: string): OffshootState | undefined {
-	const result = g.gitTry(["show", `${rev}:${STATE_FILE}`], root);
+	const result = g.gitTry(['show', `${rev}:${STATE_FILE}`], root);
 	if (result.status !== 0) return undefined;
 	try {
 		return JSON.parse(result.stdout) as OffshootState;
@@ -238,12 +253,12 @@ function readStateAt(root: string, rev: string): OffshootState | undefined {
  * the drift check unable to ever fire.
  */
 function filesContaining(root: string, rev: string, terms: string[]): number {
-	const args = ["grep", "-I", "-F", "-l"];
+	const args = ['grep', '-I', '-F', '-l'];
 	for (const term of terms) {
-		if (term !== "") args.push("-e", term);
+		if (term !== '') args.push('-e', term);
 	}
-	args.push(rev, "--", ".", `:(exclude)${STATE_FILE}`);
+	args.push(rev, '--', '.', `:(exclude)${STATE_FILE}`);
 	const result = g.gitTry(args, root);
 	if (result.status !== 0) return 0;
-	return result.stdout.split("\n").filter((l) => l.trim() !== "").length;
+	return result.stdout.split('\n').filter((l) => l.trim() !== '').length;
 }

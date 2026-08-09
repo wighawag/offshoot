@@ -1,6 +1,8 @@
-import type {Logger} from "./types.js";
+import type {Logger} from './types.js';
 
-export function createLogger(options: {verbose?: boolean; silent?: boolean} = {}): Logger {
+export function createLogger(
+	options: {verbose?: boolean; silent?: boolean} = {},
+): Logger {
 	return {
 		info(msg) {
 			if (!options.silent) console.log(msg);

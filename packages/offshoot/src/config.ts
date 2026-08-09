@@ -11,37 +11,42 @@
  * evolve it and existing projects pick the new version up on update.
  */
 
-import {existsSync, readFileSync} from "node:fs";
-import {join} from "node:path";
-import {fileURLToPath} from "node:url";
-import type {OffshootConfig, PromptSpec, ResolvedConfig} from "./types.js";
+import {existsSync, readFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import type {OffshootConfig, PromptSpec, ResolvedConfig} from './types.js';
 
 /** Carried over from create-jolly-roger and change-name. */
 export const DEFAULT_SKIP_DIRS = [
-	"node_modules",
-	".git",
-	".svelte-kit",
-	"dist",
-	"artifacts",
-	"cache",
-	"generated",
-	"deployments",
+	'node_modules',
+	'.git',
+	'.svelte-kit',
+	'dist',
+	'artifacts',
+	'cache',
+	'generated',
+	'deployments',
 ];
 
-export const DEFAULT_SKIP_FILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "pnpm-workspace.yaml"];
+export const DEFAULT_SKIP_FILES = [
+	'pnpm-lock.yaml',
+	'package-lock.json',
+	'yarn.lock',
+	'pnpm-workspace.yaml',
+];
 
 /** File CONTENT delimiters. Path delimiters are fixed at `{{ }}`; see path-interpolation.ts. */
-export const DEFAULT_CONTENT_TAGS: [string, string] = ["{{", "}}"];
+export const DEFAULT_CONTENT_TAGS: [string, string] = ['{{', '}}'];
 
-export const DEFAULT_BRANCH = "template";
+export const DEFAULT_BRANCH = 'template';
 
 const CONFIG_FILENAMES = [
-	"offshoot.config.ts",
-	"offshoot.config.mts",
-	"offshoot.config.js",
-	"offshoot.config.mjs",
-	"offshoot.config.cjs",
-	"offshoot.config.json",
+	'offshoot.config.ts',
+	'offshoot.config.mts',
+	'offshoot.config.js',
+	'offshoot.config.mjs',
+	'offshoot.config.cjs',
+	'offshoot.config.json',
 ];
 
 /** Typed helper for `offshoot.config.ts`. */
@@ -58,12 +63,14 @@ export function findConfigFile(dir: string): string | undefined {
 }
 
 export async function loadConfigFile(file: string): Promise<OffshootConfig> {
-	if (file.endsWith(".json")) {
-		const raw = readFileSync(file, "utf8");
+	if (file.endsWith('.json')) {
+		const raw = readFileSync(file, 'utf8');
 		try {
 			return JSON.parse(raw) as OffshootConfig;
 		} catch (err) {
-			throw new Error(`Failed to parse ${file}: ${err instanceof Error ? err.message : String(err)}`);
+			throw new Error(
+				`Failed to parse ${file}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 
@@ -73,8 +80,8 @@ export async function loadConfigFile(file: string): Promise<OffshootConfig> {
 	//   import {defineConfig} from "offshoot"
 	// would fail on the user's machine, because the config is evaluated inside
 	// the freshly downloaded template directory, where nothing is installed.
-	const {createJiti} = await import("jiti");
-	const selfEntry = fileURLToPath(new URL("./index.js", import.meta.url));
+	const {createJiti} = await import('jiti');
+	const selfEntry = fileURLToPath(new URL('./index.js', import.meta.url));
 	const jiti = createJiti(import.meta.url, {
 		interopDefault: true,
 		alias: {offshoot: selfEntry},
@@ -82,15 +89,20 @@ export async function loadConfigFile(file: string): Promise<OffshootConfig> {
 	const mod: unknown = await jiti.import(file);
 
 	const value = (mod as {default?: unknown})?.default ?? mod;
-	const resolved = typeof value === "function" ? (value as () => OffshootConfig)() : value;
-	if (!resolved || typeof resolved !== "object") {
-		throw new Error(`${file} must export a config object (use defineConfig()).`);
+	const resolved =
+		typeof value === 'function' ? (value as () => OffshootConfig)() : value;
+	if (!resolved || typeof resolved !== 'object') {
+		throw new Error(
+			`${file} must export a config object (use defineConfig()).`,
+		);
 	}
 	return resolved as OffshootConfig;
 }
 
 /** Read the config out of a fetched template directory. Absent is fine. */
-export async function loadTemplateConfig(dir: string): Promise<{config: OffshootConfig; file?: string}> {
+export async function loadTemplateConfig(
+	dir: string,
+): Promise<{config: OffshootConfig; file?: string}> {
 	const file = findConfigFile(dir);
 	if (!file) return {config: {}};
 	return {config: await loadConfigFile(file), file};
@@ -101,23 +113,33 @@ export interface ResolveConfigOptions {
 	inferredSourceName: string;
 }
 
-export function resolveConfig(config: OffshootConfig, options: ResolveConfigOptions): ResolvedConfig {
+export function resolveConfig(
+	config: OffshootConfig,
+	options: ResolveConfigOptions,
+): ResolvedConfig {
 	const sourceName = config.sourceName ?? options.inferredSourceName;
 	if (!sourceName) {
 		throw new Error(
-			"Could not determine the source token. Set `sourceName` in offshoot.config, or use a template whose repo name is the token.",
+			'Could not determine the source token. Set `sourceName` in offshoot.config, or use a template whose repo name is the token.',
 		);
 	}
 
 	const contentTags = config.contentTags ?? DEFAULT_CONTENT_TAGS;
-	if (!Array.isArray(contentTags) || contentTags.length !== 2 || !contentTags[0] || !contentTags[1]) {
-		throw new Error('`contentTags` must be a pair of non-empty strings, e.g. ["{{", "}}"].');
+	if (
+		!Array.isArray(contentTags) ||
+		contentTags.length !== 2 ||
+		!contentTags[0] ||
+		!contentTags[1]
+	) {
+		throw new Error(
+			'`contentTags` must be a pair of non-empty strings, e.g. ["{{", "}}"].',
+		);
 	}
 
 	return {
 		sourceName,
 		branch: config.branch ?? DEFAULT_BRANCH,
-		transforms: config.transforms ?? [{type: "rename"}],
+		transforms: config.transforms ?? [{type: 'rename'}],
 		prompts: config.prompts ?? defaultPrompts(sourceName),
 		contentTags: [contentTags[0], contentTags[1]],
 		skipDirs: config.skipDirs ?? DEFAULT_SKIP_DIRS,
@@ -140,12 +162,13 @@ export function resolveConfig(config: OffshootConfig, options: ResolveConfigOpti
 export function defaultPrompts(sourceName: string): PromptSpec[] {
 	return [
 		{
-			name: "name",
-			type: "text",
-			message: "Project name (kebab-case):",
+			name: 'name',
+			type: 'text',
+			message: 'Project name (kebab-case):',
 			initial: sourceName,
-			validate: "^[a-z0-9]+(-[a-z0-9]+)*$",
-			validationMessage: "Project name must be kebab-case (e.g. my-awesome-app)",
+			validate: '^[a-z0-9]+(-[a-z0-9]+)*$',
+			validationMessage:
+				'Project name must be kebab-case (e.g. my-awesome-app)',
 		},
 	];
 }

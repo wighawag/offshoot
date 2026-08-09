@@ -9,14 +9,14 @@
  * generic, and runs the same round-trip gate a scaffold would.
  */
 
-import {basename, resolve} from "node:path";
-import type {CaseVariant, Logger} from "../types.js";
-import {createLogger} from "../logger.js";
-import {loadTemplateConfig, resolveConfig} from "../config.js";
-import {readTree} from "../vfs.js";
-import {DEFAULT_VARIANTS, variantPairs} from "../case-variants.js";
-import {assertRoundTrip, RoundTripError} from "../transforms/rename.js";
-import * as g from "../git.js";
+import {basename, resolve} from 'node:path';
+import type {CaseVariant, Logger} from '../types.js';
+import {createLogger} from '../logger.js';
+import {loadTemplateConfig, resolveConfig} from '../config.js';
+import {readTree} from '../vfs.js';
+import {DEFAULT_VARIANTS, variantPairs} from '../case-variants.js';
+import {assertRoundTrip, RoundTripError} from '../transforms/rename.js';
+import * as g from '../git.js';
 
 export interface DoctorOptions {
 	cwd: string;
@@ -50,37 +50,69 @@ export interface DoctorResult {
 
 /** Tokens too generic to replace safely, whatever the repo. */
 const GENERIC_TOKENS = new Set([
-	"app",
-	"api",
-	"web",
-	"lib",
-	"core",
-	"src",
-	"test",
-	"tests",
-	"demo",
-	"site",
-	"main",
-	"name",
-	"node",
-	"project",
-	"template",
-	"starter",
-	"example",
-	"boilerplate",
-	"server",
-	"client",
-	"common",
-	"utils",
-	"tools",
-	"config",
+	'app',
+	'api',
+	'web',
+	'lib',
+	'core',
+	'src',
+	'test',
+	'tests',
+	'demo',
+	'site',
+	'main',
+	'name',
+	'node',
+	'project',
+	'template',
+	'starter',
+	'example',
+	'boilerplate',
+	'server',
+	'client',
+	'common',
+	'utils',
+	'tools',
+	'config',
 ]);
 
 /**
  * A character that anchors an occurrence to code rather than prose:
  * quotes, path and scope separators, identifier characters.
  */
-const ANCHORS = new Set(['"', "'", "`", "/", "\\", "@", ":", ".", "-", "_", "=", "(", ")", "[", "]", "{", "}", ",", ";", "<", ">", "#", "$", "*", "+", "|", "&", "?", "!", "~", "%"]);
+const ANCHORS = new Set([
+	'"',
+	"'",
+	'`',
+	'/',
+	'\\',
+	'@',
+	':',
+	'.',
+	'-',
+	'_',
+	'=',
+	'(',
+	')',
+	'[',
+	']',
+	'{',
+	'}',
+	',',
+	';',
+	'<',
+	'>',
+	'#',
+	'$',
+	'*',
+	'+',
+	'|',
+	'&',
+	'?',
+	'!',
+	'~',
+	'%',
+]);
 
 function isWordChar(ch: string | undefined): boolean {
 	return ch !== undefined && /[A-Za-z0-9]/.test(ch);
@@ -104,18 +136,23 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 		options.sourceName ??
 		raw.sourceName ??
 		(g.isRepo(root) ? basename(g.repoRoot(root)) : basename(root));
-	const config = resolveConfig({...raw, sourceName: options.sourceName ?? raw.sourceName}, {
-		inferredSourceName: inferred,
-	});
+	const config = resolveConfig(
+		{...raw, sourceName: options.sourceName ?? raw.sourceName},
+		{
+			inferredSourceName: inferred,
+		},
+	);
 	const sourceName = config.sourceName;
 
 	const errors: string[] = [];
 	const warnings: string[] = [];
 
 	log.info(`Template: ${root}`);
-	log.info(`Config:   ${file ? basename(file) : "(none - zero-config defaults)"}`);
+	log.info(
+		`Config:   ${file ? basename(file) : '(none - zero-config defaults)'}`,
+	);
 	log.info(`Token:    "${sourceName}"`);
-	log.info("");
+	log.info('');
 
 	// --- token quality -----------------------------------------------------
 	if (sourceName.length < 5) {
@@ -129,7 +166,9 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 		);
 	}
 	if (GENERIC_TOKENS.has(sourceName.toLowerCase())) {
-		errors.push(`Token "${sourceName}" is a generic word and will match text that has nothing to do with the project.`);
+		errors.push(
+			`Token "${sourceName}" is a generic word and will match text that has nothing to do with the project.`,
+		);
 	}
 
 	// --- occurrence inventory ---------------------------------------------
@@ -149,15 +188,15 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 		// Paths count too: a file or directory named after the token is renamed
 		// by the same transform.
 		for (const {from} of variants) {
-			if (from !== "" && vf.path.includes(from)) filesWithToken.add(vf.path);
+			if (from !== '' && vf.path.includes(from)) filesWithToken.add(vf.path);
 		}
 		if (vf.binary) continue;
 
-		const lines = vf.content.toString("utf8").split("\n");
+		const lines = vf.content.toString('utf8').split('\n');
 		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i] ?? "";
+			const line = lines[i] ?? '';
 			for (const {variant, from} of variants) {
-				if (from === "") continue;
+				if (from === '') continue;
 				let index = line.indexOf(from);
 				while (index !== -1) {
 					filesWithToken.add(vf.path);
@@ -177,8 +216,10 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 	const bare = occurrences.filter((o) => o.bare);
 
 	log.info(`Scanned ${files.length} file(s).`);
-	log.info(`Found ${occurrences.length} occurrence(s) in ${filesWithToken.size} file(s).`);
-	log.info("");
+	log.info(
+		`Found ${occurrences.length} occurrence(s) in ${filesWithToken.size} file(s).`,
+	);
+	log.info('');
 
 	if (occurrences.length === 0) {
 		errors.push(
@@ -194,9 +235,9 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 	}
 	for (const [path, list] of [...byFile.entries()].sort()) {
 		const kinds = new Set(list.map((o) => o.variant));
-		log.info(`  ${path}  (${list.length}x: ${[...kinds].join(", ")})`);
+		log.info(`  ${path}  (${list.length}x: ${[...kinds].join(', ')})`);
 	}
-	log.info("");
+	log.info('');
 
 	if (bare.length > 0) {
 		warnings.push(
@@ -209,29 +250,31 @@ export async function doctor(options: DoctorOptions): Promise<DoctorResult> {
 	}
 
 	// --- round-trip probe --------------------------------------------------
-	const probe = options.name ?? "offshoot-probe-name";
+	const probe = options.name ?? 'offshoot-probe-name';
 	try {
 		assertRoundTrip(files, sourceName, probe);
 		log.info(`Round-trip check passed for "${sourceName}" -> "${probe}".`);
 	} catch (err) {
 		if (err instanceof RoundTripError) {
 			errors.push(`Round-trip check FAILED for "${sourceName}" -> "${probe}".`);
-			errors.push(...err.report.split("\n").map((l) => `  ${l}`));
+			errors.push(...err.report.split('\n').map((l) => `  ${l}`));
 		} else {
 			throw err;
 		}
 	}
 	if (!options.name) {
-		log.info(`  (probe name; re-run with --name <realistic-name> to test a name your users would pick)`);
+		log.info(
+			`  (probe name; re-run with --name <realistic-name> to test a name your users would pick)`,
+		);
 	}
-	log.info("");
+	log.info('');
 
 	for (const w of warnings) log.warn(`warning: ${w}`);
 	for (const e of errors) log.warn(`error:   ${e}`);
 
 	const ok = errors.length === 0 && (!options.strict || warnings.length === 0);
-	log.info("");
-	log.info(ok ? "doctor: ok" : "doctor: problems found");
+	log.info('');
+	log.info(ok ? 'doctor: ok' : 'doctor: problems found');
 
 	return {
 		sourceName,

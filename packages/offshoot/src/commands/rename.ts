@@ -7,11 +7,17 @@
  * the name, so the next `offshoot update` is a normal template-only merge.
  */
 
-import {resolve} from "node:path";
-import type {Logger, OffshootState} from "../types.js";
-import {createLogger} from "../logger.js";
-import * as g from "../git.js";
-import {commitMessageFor, commitSnapshot, openProject, prepareTemplate, transformForState} from "./common.js";
+import {resolve} from 'node:path';
+import type {Logger, OffshootState} from '../types.js';
+import {createLogger} from '../logger.js';
+import * as g from '../git.js';
+import {
+	commitMessageFor,
+	commitSnapshot,
+	openProject,
+	prepareTemplate,
+	transformForState,
+} from './common.js';
 
 export interface RenameOptions {
 	cwd: string;
@@ -33,10 +39,12 @@ export async function rename(options: RenameOptions): Promise<RenameResult> {
 	const log = options.log ?? createLogger();
 	const project = openProject(resolve(options.cwd));
 	const {root, state, branch, mainBranch} = project;
-	const key = options.answer ?? "name";
+	const key = options.answer ?? 'name';
 
 	if (mainBranch === branch) {
-		throw new Error(`You are on the template branch ("${branch}"). Check out your own branch first.`);
+		throw new Error(
+			`You are on the template branch ("${branch}"). Check out your own branch first.`,
+		);
 	}
 	if (!g.isClean(root)) {
 		throw new Error(
@@ -45,8 +53,10 @@ export async function rename(options: RenameOptions): Promise<RenameResult> {
 	}
 
 	const current = state.answers[key];
-	if (typeof current !== "string") {
-		throw new Error(`No "${key}" answer recorded, so there is nothing to rename.`);
+	if (typeof current !== 'string') {
+		throw new Error(
+			`No "${key}" answer recorded, so there is nothing to rename.`,
+		);
 	}
 	if (current === options.newName) {
 		log.info(`Already named "${current}".`);
@@ -54,7 +64,9 @@ export async function rename(options: RenameOptions): Promise<RenameResult> {
 	}
 
 	// The CURRENT ref, deliberately: a rename must change exactly one thing.
-	log.info(`Renaming "${current}" -> "${options.newName}" at ${state.ref.slice(0, 7)} ...`);
+	log.info(
+		`Renaming "${current}" -> "${options.newName}" at ${state.ref.slice(0, 7)} ...`,
+	);
 	const prepared = await prepareTemplate(state.template, state.ref);
 
 	try {
@@ -66,7 +78,7 @@ export async function rename(options: RenameOptions): Promise<RenameResult> {
 		const files = transformForState({
 			prepared,
 			state: nextState,
-			operation: "rename",
+			operation: 'rename',
 			force: options.force,
 			log,
 		});
@@ -76,28 +88,43 @@ export async function rename(options: RenameOptions): Promise<RenameResult> {
 				root,
 				branch,
 				files,
-				message: commitMessageFor(state.template, state.ref, `rename ${current} -> ${options.newName}`),
+				message: commitMessageFor(
+					state.template,
+					state.ref,
+					`rename ${current} -> ${options.newName}`,
+				),
 				// A rename must reach every file, including once-seeded ones.
 				skipIfExists: [],
 				log,
 			});
 		} catch (err) {
-			g.gitTry(["checkout", "--force", mainBranch], root);
+			g.gitTry(['checkout', '--force', mainBranch], root);
 			throw err;
 		}
 
-		g.git(["checkout", mainBranch], root);
-		const outcome = g.merge(root, branch, `offshoot: rename ${current} -> ${options.newName}`);
+		g.git(['checkout', mainBranch], root);
+		const outcome = g.merge(
+			root,
+			branch,
+			`offshoot: rename ${current} -> ${options.newName}`,
+		);
 
 		if (!outcome.ok) {
-			log.warn("");
+			log.warn('');
 			log.warn(`Merge conflicts in ${outcome.conflicted.length} file(s):`);
 			for (const f of outcome.conflicted) log.warn(`  ${f}`);
-			log.warn("");
-			log.warn("These are places where you edited a line that also contains the name.");
-			log.warn("Resolve them, then:  git add -A && git commit");
-			log.warn("Or back out entirely with:  git merge --abort");
-			return {from: current, to: options.newName, conflicted: outcome.conflicted, renamed: false};
+			log.warn('');
+			log.warn(
+				'These are places where you edited a line that also contains the name.',
+			);
+			log.warn('Resolve them, then:  git add -A && git commit');
+			log.warn('Or back out entirely with:  git merge --abort');
+			return {
+				from: current,
+				to: options.newName,
+				conflicted: outcome.conflicted,
+				renamed: false,
+			};
 		}
 
 		log.info(`Renamed to "${options.newName}".`);

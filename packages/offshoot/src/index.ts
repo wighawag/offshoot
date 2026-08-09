@@ -9,23 +9,31 @@
  * history contains zero commits from the template repository.
  */
 
-export {scaffold, parseScaffoldArgs} from "./commands/scaffold.js";
-export type {ScaffoldOptions, ScaffoldResult, ParsedScaffoldArgs} from "./commands/scaffold.js";
+export {scaffold, parseScaffoldArgs} from './commands/scaffold.js';
+export type {
+	ScaffoldOptions,
+	ScaffoldResult,
+	ParsedScaffoldArgs,
+} from './commands/scaffold.js';
 
-export {update, assertNoNameDrift} from "./commands/update.js";
-export type {UpdateOptions, UpdateResult} from "./commands/update.js";
+export {update, assertNoNameDrift} from './commands/update.js';
+export type {UpdateOptions, UpdateResult} from './commands/update.js';
 
-export {check} from "./commands/check.js";
-export type {CheckOptions, CheckResult} from "./commands/check.js";
+export {check} from './commands/check.js';
+export type {CheckOptions, CheckResult} from './commands/check.js';
 
-export {rename} from "./commands/rename.js";
-export type {RenameOptions, RenameResult} from "./commands/rename.js";
+export {rename} from './commands/rename.js';
+export type {RenameOptions, RenameResult} from './commands/rename.js';
 
-export {doctor} from "./commands/doctor.js";
-export type {DoctorOptions, DoctorResult, DoctorOccurrence} from "./commands/doctor.js";
+export {doctor} from './commands/doctor.js';
+export type {
+	DoctorOptions,
+	DoctorResult,
+	DoctorOccurrence,
+} from './commands/doctor.js';
 
-export {eject} from "./commands/eject.js";
-export type {EjectOptions, EjectResult} from "./commands/eject.js";
+export {eject} from './commands/eject.js';
+export type {EjectOptions, EjectResult} from './commands/eject.js';
 
 // --- authoring surface -----------------------------------------------------
 
@@ -38,7 +46,7 @@ export {
 	DEFAULT_SKIP_FILES,
 	DEFAULT_CONTENT_TAGS,
 	DEFAULT_BRANCH,
-} from "./config.js";
+} from './config.js';
 
 export {
 	resolveTransforms,
@@ -54,21 +62,37 @@ export {
 	interpolatePath,
 	hasPathPlaceholder,
 	PATH_TAGS,
-} from "./transforms/index.js";
+} from './transforms/index.js';
 
-export {buildTree} from "./pipeline.js";
-export type {BuildTreeOptions} from "./pipeline.js";
+export {buildTree} from './pipeline.js';
+export type {BuildTreeOptions} from './pipeline.js';
 
-export {readTree, writeTree} from "./vfs.js";
-export {isText, isBinary, looksBinary, getEncoding} from "./text-binary/index.js";
-export {CASE_FUNCTIONS, DEFAULT_VARIANTS, variantsOf, variantPairs} from "./case-variants.js";
-export {readState, serializeState, stateFile, STATE_FILE, STATE_VERSION} from "./state.js";
-export {parseSource, resolveRef, downloadTemplate} from "./source.js";
-export {createLogger, silentLogger} from "./logger.js";
-export {askAnswers, initialFor, validateValue} from "./prompt.js";
-export type {AskOptions} from "./prompt.js";
-export {detectPackageManager, refreshLockfile} from "./package-manager.js";
-export type {PackageManager, PackageManagerName} from "./package-manager.js";
+export {readTree, writeTree} from './vfs.js';
+export {
+	isText,
+	isBinary,
+	looksBinary,
+	getEncoding,
+} from './text-binary/index.js';
+export {
+	CASE_FUNCTIONS,
+	DEFAULT_VARIANTS,
+	variantsOf,
+	variantPairs,
+} from './case-variants.js';
+export {
+	readState,
+	serializeState,
+	stateFile,
+	STATE_FILE,
+	STATE_VERSION,
+} from './state.js';
+export {parseSource, resolveRef, downloadTemplate} from './source.js';
+export {createLogger, silentLogger} from './logger.js';
+export {askAnswers, initialFor, validateValue} from './prompt.js';
+export type {AskOptions} from './prompt.js';
+export {detectPackageManager, refreshLockfile} from './package-manager.js';
+export type {PackageManager, PackageManagerName} from './package-manager.js';
 
 export type {
 	Answers,
@@ -89,4 +113,4 @@ export type {
 	TransformContext,
 	TransformSpec,
 	VirtualFile,
-} from "./types.js";
+} from './types.js';

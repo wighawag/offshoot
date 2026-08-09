@@ -22,8 +22,8 @@ import {
 	sentenceCase,
 	snakeCase,
 	trainCase,
-} from "change-case";
-import type {CaseVariant} from "./types.js";
+} from 'change-case';
+import type {CaseVariant} from './types.js';
 
 export const CASE_FUNCTIONS: Record<CaseVariant, (input: string) => string> = {
 	camelCase,
@@ -41,20 +41,23 @@ export const CASE_FUNCTIONS: Record<CaseVariant, (input: string) => string> = {
 
 /** The exact list, and order, change-name uses. */
 export const DEFAULT_VARIANTS: CaseVariant[] = [
-	"camelCase",
-	"constantCase",
-	"headerCase",
-	"noCase",
-	"paramCase",
-	"pascalCase",
-	"pathCase",
-	"sentenceCase",
-	"snakeCase",
-	"capitalCase",
-	"dotCase",
+	'camelCase',
+	'constantCase',
+	'headerCase',
+	'noCase',
+	'paramCase',
+	'pascalCase',
+	'pathCase',
+	'sentenceCase',
+	'snakeCase',
+	'capitalCase',
+	'dotCase',
 ];
 
-export function variantsOf(name: string, variants: CaseVariant[] = DEFAULT_VARIANTS): string[] {
+export function variantsOf(
+	name: string,
+	variants: CaseVariant[] = DEFAULT_VARIANTS,
+): string[] {
 	return variants.map((v) => CASE_FUNCTIONS[v](name));
 }
 
@@ -76,7 +79,7 @@ export function variantPairs(
 		if (!fn) continue;
 		const f = fn(from);
 		const t = fn(to);
-		if (f === "" || seen.has(f)) continue;
+		if (f === '' || seen.has(f)) continue;
 		seen.add(f);
 		pairs.push({variant, from: f, to: t});
 	}

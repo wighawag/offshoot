@@ -11,7 +11,7 @@
  *    why READMEs should say `npm create offshoot@latest`.
  */
 
-import {scaffold} from "offshoot";
+import {scaffold} from 'offshoot';
 
 const USAGE = `create-offshoot - scaffold a project from a git template
 
@@ -30,7 +30,7 @@ Flags need npm's separator:
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 
-	if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+	if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
 		console.log(USAGE);
 		process.exitCode = argv.length === 0 ? 1 : 0;
 		return;
@@ -41,6 +41,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-	console.error(`\nerror: ${err instanceof Error ? err.message : String(err)}\n`);
+	console.error(
+		`\nerror: ${err instanceof Error ? err.message : String(err)}\n`,
+	);
 	process.exitCode = 1;
 });

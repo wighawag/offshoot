@@ -4,7 +4,7 @@
  * the primary path; `--answer key=value` exists for CI.
  */
 
-import type {AnswerValue, Answers, PromptSpec} from "./types.js";
+import type {AnswerValue, Answers, PromptSpec} from './types.js';
 
 export interface AskOptions {
 	prompts: PromptSpec[];
@@ -24,7 +24,10 @@ export interface AskOptions {
 }
 
 /** The suggestion shown for a prompt: a caller default beats the template's. */
-export function initialFor(spec: PromptSpec, defaults?: Answers): AnswerValue | undefined {
+export function initialFor(
+	spec: PromptSpec,
+	defaults?: Answers,
+): AnswerValue | undefined {
 	const override = defaults?.[spec.name];
 	return override !== undefined ? override : spec.initial;
 }
@@ -46,10 +49,15 @@ export async function askAnswers(options: AskOptions): Promise<Answers> {
 			);
 		}
 
-		const prompts = (await import("prompts")).default;
+		const prompts = (await import('prompts')).default;
 		const response = await prompts(
 			{
-				type: spec.type === "confirm" ? "confirm" : spec.type === "select" ? "select" : "text",
+				type:
+					spec.type === 'confirm'
+						? 'confirm'
+						: spec.type === 'select'
+							? 'select'
+							: 'text',
 				name: spec.name,
 				message: spec.message ?? `${spec.name}:`,
 				initial: initial as string | undefined,
@@ -58,46 +66,54 @@ export async function askAnswers(options: AskOptions): Promise<Answers> {
 			},
 			{
 				onCancel: () => {
-					throw new Error("Cancelled.");
+					throw new Error('Cancelled.');
 				},
 			},
 		);
-		if (response[spec.name] === undefined) throw new Error("Cancelled.");
+		if (response[spec.name] === undefined) throw new Error('Cancelled.');
 		answers[spec.name] = response[spec.name] as AnswerValue;
 	}
 
 	for (const spec of options.prompts) {
 		const value = answers[spec.name];
-		if (typeof value === "string") {
+		if (typeof value === 'string') {
 			const check = validateValue(spec, value);
-			if (check !== true) throw new Error(`Invalid value for "${spec.name}": ${check}`);
+			if (check !== true)
+				throw new Error(`Invalid value for "${spec.name}": ${check}`);
 		}
 	}
 
 	return answers;
 }
 
-function toValidator(spec: PromptSpec): ((value: string) => true | string) | undefined {
+function toValidator(
+	spec: PromptSpec,
+): ((value: string) => true | string) | undefined {
 	if (!spec.validate) return undefined;
 	return (value: string) => validateValue(spec, value);
 }
 
 export function validateValue(spec: PromptSpec, value: string): true | string {
 	if (!spec.validate) return true;
-	if (typeof spec.validate === "function") return spec.validate(value);
+	if (typeof spec.validate === 'function') return spec.validate(value);
 	const re = new RegExp(spec.validate);
-	return re.test(value) ? true : (spec.validationMessage ?? `must match ${spec.validate}`);
+	return re.test(value)
+		? true
+		: (spec.validationMessage ?? `must match ${spec.validate}`);
 }
 
 /** `--answer key=value` and `key=value` positional pairs. */
-export function parseAnswerAssignment(text: string): [string, AnswerValue] | undefined {
-	const eq = text.indexOf("=");
+export function parseAnswerAssignment(
+	text: string,
+): [string, AnswerValue] | undefined {
+	const eq = text.indexOf('=');
 	if (eq <= 0) return undefined;
 	const key = text.slice(0, eq).trim();
 	const raw = text.slice(eq + 1);
 	if (!/^[A-Za-z_$][\w$]*$/.test(key)) return undefined;
-	if (raw === "true") return [key, true];
-	if (raw === "false") return [key, false];
-	if (raw !== "" && !Number.isNaN(Number(raw)) && /^-?\d+(\.\d+)?$/.test(raw)) return [key, Number(raw)];
+	if (raw === 'true') return [key, true];
+	if (raw === 'false') return [key, false];
+	if (raw !== '' && !Number.isNaN(Number(raw)) && /^-?\d+(\.\d+)?$/.test(raw))
+		return [key, Number(raw)];
 	return [key, raw];
 }

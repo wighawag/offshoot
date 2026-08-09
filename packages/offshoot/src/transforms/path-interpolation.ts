@@ -16,12 +16,17 @@
  * loop, and `/` in an expansion would silently create directories.
  */
 
-import type {Answers, Transform, TransformContext, VirtualFile} from "../types.js";
-import {matchesAny} from "../glob.js";
+import type {
+	Answers,
+	Transform,
+	TransformContext,
+	VirtualFile,
+} from '../types.js';
+import {matchesAny} from '../glob.js';
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z_$][\w$]*)\s*\}\}/g;
 
-export const PATH_TAGS: readonly [string, string] = ["{{", "}}"];
+export const PATH_TAGS: readonly [string, string] = ['{{', '}}'];
 
 export function hasPathPlaceholder(path: string): boolean {
 	PLACEHOLDER.lastIndex = 0;
@@ -37,15 +42,17 @@ export function interpolatePath(path: string, answers: Answers): string {
 			);
 		}
 		const value = answers[key];
-		const text = value == null ? "" : String(value);
-		if (text.includes("/") || text.includes("\\")) {
+		const text = value == null ? '' : String(value);
+		if (text.includes('/') || text.includes('\\')) {
 			throw new Error(
 				`path interpolation: {{${key}}} expanded to "${text}", which contains a path separator. ` +
 					`Names are substituted into a single path segment and may not create directories.`,
 			);
 		}
-		if (text === "") {
-			throw new Error(`path interpolation: {{${key}}} expanded to an empty string in "${path}"`);
+		if (text === '') {
+			throw new Error(
+				`path interpolation: {{${key}}} expanded to an empty string in "${path}"`,
+			);
 		}
 		return text;
 	});
@@ -53,8 +60,12 @@ export function interpolatePath(path: string, answers: Answers): string {
 
 export function createPathInterpolationTransform(exclude: string[]): Transform {
 	return {
-		name: "path-interpolation",
-		apply(files: VirtualFile[], answers: Answers, _ctx: TransformContext): VirtualFile[] {
+		name: 'path-interpolation',
+		apply(
+			files: VirtualFile[],
+			answers: Answers,
+			_ctx: TransformContext,
+		): VirtualFile[] {
 			return files.map((file) => {
 				if (file.skip) return file;
 				if (!hasPathPlaceholder(file.path)) return file;

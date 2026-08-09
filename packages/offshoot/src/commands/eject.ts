@@ -12,16 +12,19 @@
  * part, which needs no config at all.
  */
 
-import {existsSync, readFileSync, rmSync, writeFileSync} from "node:fs";
-import {join, resolve} from "node:path";
-import type {EjectConfig, Logger} from "../types.js";
-import {createLogger} from "../logger.js";
-import {readState, stateFilePath, STATE_FILE} from "../state.js";
-import {stripPackageJsonSource, isPackageJson} from "../transforms/eject-integration.js";
-import {refreshLockfile, staleLockfileWarning} from "../package-manager.js";
-import {matchesAny} from "../glob.js";
-import {prepareTemplate} from "./common.js";
-import * as g from "../git.js";
+import {existsSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {join, resolve} from 'node:path';
+import type {EjectConfig, Logger} from '../types.js';
+import {createLogger} from '../logger.js';
+import {readState, stateFilePath, STATE_FILE} from '../state.js';
+import {
+	stripPackageJsonSource,
+	isPackageJson,
+} from '../transforms/eject-integration.js';
+import {refreshLockfile, staleLockfileWarning} from '../package-manager.js';
+import {matchesAny} from '../glob.js';
+import {prepareTemplate} from './common.js';
+import * as g from '../git.js';
 
 export interface EjectOptions {
 	cwd: string;
@@ -55,13 +58,17 @@ export async function eject(options: EjectOptions): Promise<EjectResult> {
 	if (!g.isRepo(cwd)) throw new Error(`${cwd} is not a git repository.`);
 	const root = g.repoRoot(cwd);
 	const state = readState(root);
-	const branch = state.branch ?? "template";
+	const branch = state.branch ?? 'template';
 
 	if (g.currentBranch(root) === branch) {
-		throw new Error(`You are on the template branch ("${branch}"). Check out your own branch first.`);
+		throw new Error(
+			`You are on the template branch ("${branch}"). Check out your own branch first.`,
+		);
 	}
 	if (!g.isClean(root)) {
-		throw new Error(`Working tree is not clean. Commit or stash first.\n\n${g.statusShort(root)}`);
+		throw new Error(
+			`Working tree is not clean. Commit or stash first.\n\n${g.statusShort(root)}`,
+		);
 	}
 
 	// What the template declares as update-only. Absent config (or no network)
@@ -87,19 +94,22 @@ export async function eject(options: EjectOptions): Promise<EjectResult> {
 	const removedDependencies: string[] = [];
 	for (const path of tracked) {
 		if (!isPackageJson(path)) continue;
-		const absolute = join(root, ...path.split("/"));
+		const absolute = join(root, ...path.split('/'));
 		if (!existsSync(absolute)) continue;
 
-		const source = readFileSync(absolute, "utf8");
+		const source = readFileSync(absolute, 'utf8');
 		const stripped = stripPackageJsonSource(source, declared.packageJson);
 		if (!stripped) continue;
 
 		writeFileSync(absolute, stripped.content);
 		for (const entry of stripped.removed) {
 			removed.push(`${path}: ${entry}`);
-			const [section, ...rest] = entry.split(".");
-			const name = rest.join(".");
-			if ((section === "dependencies" || section === "devDependencies") && !removedDependencies.includes(name)) {
+			const [section, ...rest] = entry.split('.');
+			const name = rest.join('.');
+			if (
+				(section === 'dependencies' || section === 'devDependencies') &&
+				!removedDependencies.includes(name)
+			) {
 				removedDependencies.push(name);
 			}
 		}
@@ -109,7 +119,7 @@ export async function eject(options: EjectOptions): Promise<EjectResult> {
 	const filesRemoved: string[] = [];
 	for (const path of tracked) {
 		if (!matchesAny(path, declared.exclude)) continue;
-		rmSync(join(root, ...path.split("/")), {force: true});
+		rmSync(join(root, ...path.split('/')), {force: true});
 		filesRemoved.push(path);
 	}
 
@@ -123,18 +133,19 @@ export async function eject(options: EjectOptions): Promise<EjectResult> {
 		const result = refreshLockfile(root, log);
 		lockfileRefreshed = result.refreshed;
 		if (!result.refreshed) {
-			for (const line of staleLockfileWarning(result, removedDependencies)) log.warn(`  ${line}`);
+			for (const line of staleLockfileWarning(result, removedDependencies))
+				log.warn(`  ${line}`);
 		}
 	}
 
 	// 5. The branch.
 	let branchDeleted = false;
 	if (g.branchExists(root, branch)) {
-		g.git(["branch", "-D", branch], root);
+		g.git(['branch', '-D', branch], root);
 		branchDeleted = true;
 	}
 
-	g.git(["add", "-A"], root);
+	g.git(['add', '-A'], root);
 	let committed = false;
 	if (!options.noCommit && !g.stagedIsEmpty(root)) {
 		g.commit(root, `offshoot: eject from ${state.template}`);
@@ -142,11 +153,22 @@ export async function eject(options: EjectOptions): Promise<EjectResult> {
 	}
 
 	log.info(`Ejected from ${state.template}.`);
-	log.info(`  removed ${STATE_FILE}${branchDeleted ? ` and branch "${branch}"` : ""}`);
+	log.info(
+		`  removed ${STATE_FILE}${branchDeleted ? ` and branch "${branch}"` : ''}`,
+	);
 	for (const entry of removed) log.info(`  removed ${entry}`);
 	for (const path of filesRemoved) log.info(`  removed ${path}`);
 	if (lockfileRefreshed) log.info(`  updated the lockfile`);
-	log.info(`  this is permanent: \`offshoot update\` can no longer merge template changes.`);
+	log.info(
+		`  this is permanent: \`offshoot update\` can no longer merge template changes.`,
+	);
 
-	return {branchDeleted, branch, committed, removed, filesRemoved, lockfileRefreshed};
+	return {
+		branchDeleted,
+		branch,
+		committed,
+		removed,
+		filesRemoved,
+		lockfileRefreshed,
+	};
 }

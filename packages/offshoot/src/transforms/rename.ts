@@ -9,8 +9,15 @@
  * `{{project_name}}`.
  */
 
-import type {Answers, CaseVariant, RenameSpec, Transform, TransformContext, VirtualFile} from "../types.js";
-import {DEFAULT_VARIANTS, variantPairs} from "../case-variants.js";
+import type {
+	Answers,
+	CaseVariant,
+	RenameSpec,
+	Transform,
+	TransformContext,
+	VirtualFile,
+} from '../types.js';
+import {DEFAULT_VARIANTS, variantPairs} from '../case-variants.js';
 
 export interface RenameCountResult {
 	files: VirtualFile[];
@@ -61,29 +68,30 @@ export function applyRename(
 		let count = 0;
 
 		// Paths: every segment, so nested directories are renamed too.
-		const segments = file.path.split("/");
+		const segments = file.path.split('/');
 		const newSegments = segments.map((segment) => {
 			const r = replaceCounting(segment);
 			count += r.count;
 			return r.output;
 		});
-		const newPath = countOnly ? file.path : newSegments.join("/");
+		const newPath = countOnly ? file.path : newSegments.join('/');
 
 		// Contents: text only. Binary files pass through byte-identical, but
 		// their paths above were still renamed.
 		let content = file.content;
 		if (!file.binary) {
-			const r = replaceCounting(content.toString("utf8"));
+			const r = replaceCounting(content.toString('utf8'));
 			count += r.count;
 			if (!countOnly && r.count > 0) {
-				content = Buffer.from(r.output, "utf8");
+				content = Buffer.from(r.output, 'utf8');
 			}
 		}
 
 		total += count;
 		perFile.set(newPath, (perFile.get(newPath) ?? 0) + count);
 
-		if (count === 0 || countOnly) return file.path === newPath ? file : {...file, path: newPath};
+		if (count === 0 || countOnly)
+			return file.path === newPath ? file : {...file, path: newPath};
 		return {...file, path: newPath, content};
 	});
 
@@ -120,7 +128,7 @@ export class RoundTripError extends Error {
 				`  ${args.forward} replacement(s) applied, ${args.reverse} found when reversing.\n` +
 				`  ${direction}, so this transform is not round-trippable and an update could silently corrupt the project.`,
 		);
-		this.name = "RoundTripError";
+		this.name = 'RoundTripError';
 		this.forward = args.forward;
 		this.reverse = args.reverse;
 		this.files = args.files;
@@ -128,25 +136,27 @@ export class RoundTripError extends Error {
 	}
 
 	get report(): string {
-		const lines = [this.message, ""];
+		const lines = [this.message, ''];
 		if (this.files.length > 0) {
-			lines.push("Files where the counts disagree:");
+			lines.push('Files where the counts disagree:');
 			for (const f of this.files) lines.push(`  ${f}`);
-			lines.push("");
+			lines.push('');
 		}
 		if (this.occurrences.length > 0) {
-			lines.push("Offending occurrences:");
+			lines.push('Offending occurrences:');
 			for (const o of this.occurrences) {
 				lines.push(`  ${o.path}:${o.line}: ${o.text.trim()}`);
 			}
 			if (this.occurrences.length >= MAX_REPORTED) {
 				lines.push(`  ... (truncated)`);
 			}
-			lines.push("");
+			lines.push('');
 		}
-		lines.push("Pick a different name, add a `patterns` transform for the ambiguous spots,");
-		lines.push("or re-run with --force to accept the risk.");
-		return lines.join("\n");
+		lines.push(
+			'Pick a different name, add a `patterns` transform for the ambiguous spots,',
+		);
+		lines.push('or re-run with --force to accept the risk.');
+		return lines.join('\n');
 	}
 }
 
@@ -167,7 +177,10 @@ export function assertRoundTrip(
 ): RenameCountResult {
 	const variants = options.variants ?? DEFAULT_VARIANTS;
 	const forward = applyRename(original, from, to, {variants});
-	const reverse = applyRename(forward.files, to, from, {variants, countOnly: true});
+	const reverse = applyRename(forward.files, to, from, {
+		variants,
+		countOnly: true,
+	});
 
 	if (forward.count === reverse.count) return forward;
 
@@ -177,7 +190,12 @@ export function assertRoundTrip(
 		if (forwardCount !== reverseCount) disagreeing.push(path);
 	}
 
-	const occurrences = collectOccurrences(forward.files, disagreeing, to, variants);
+	const occurrences = collectOccurrences(
+		forward.files,
+		disagreeing,
+		to,
+		variants,
+	);
 
 	throw new RoundTripError({
 		from,
@@ -200,11 +218,11 @@ function collectOccurrences(
 	const out: RoundTripOccurrence[] = [];
 	for (const file of files) {
 		if (!wanted.has(file.path) || file.binary || file.skip) continue;
-		const lines = file.content.toString("utf8").split("\n");
+		const lines = file.content.toString('utf8').split('\n');
 		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i] ?? "";
+			const line = lines[i] ?? '';
 			for (const term of terms) {
-				if (term !== "" && line.includes(term)) {
+				if (term !== '' && line.includes(term)) {
 					out.push({path: file.path, line: i + 1, text: line, match: term});
 					break;
 				}
@@ -217,13 +235,19 @@ function collectOccurrences(
 
 export function createRenameTransform(spec: RenameSpec): Transform {
 	return {
-		name: "rename",
-		apply(files: VirtualFile[], answers: Answers, ctx: TransformContext): VirtualFile[] {
+		name: 'rename',
+		apply(
+			files: VirtualFile[],
+			answers: Answers,
+			ctx: TransformContext,
+		): VirtualFile[] {
 			const from = spec.from ?? ctx.sourceName;
-			const answerKey = spec.answer ?? "name";
+			const answerKey = spec.answer ?? 'name';
 			const raw = answers[answerKey];
-			if (typeof raw !== "string" || raw === "") {
-				throw new Error(`rename transform: answer "${answerKey}" is missing or not a string`);
+			if (typeof raw !== 'string' || raw === '') {
+				throw new Error(
+					`rename transform: answer "${answerKey}" is missing or not a string`,
+				);
 			}
 			if (from === raw) return files;
 			const variants = spec.variants ?? DEFAULT_VARIANTS;

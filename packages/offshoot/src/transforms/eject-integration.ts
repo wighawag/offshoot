@@ -21,10 +21,16 @@
  * and trailing newline, and files that end up unchanged are left byte-identical.
  */
 
-import type {Answers, EjectConfig, Transform, TransformContext, VirtualFile} from "../types.js";
+import type {
+	Answers,
+	EjectConfig,
+	Transform,
+	TransformContext,
+	VirtualFile,
+} from '../types.js';
 
 /** The dependency name that IS the integration. */
-const SELF = "offshoot";
+const SELF = 'offshoot';
 
 /**
  * Matches a script that INVOKES the offshoot binary: "offshoot update",
@@ -41,7 +47,7 @@ const INVOKES_SELF =
 type Json = Record<string, unknown>;
 
 export function isPackageJson(path: string): boolean {
-	return path === "package.json" || path.endsWith("/package.json");
+	return path === 'package.json' || path.endsWith('/package.json');
 }
 
 /** Indentation the file already uses, so an edit does not reformat it. */
@@ -49,7 +55,7 @@ export function detectIndent(source: string): string | number {
 	const match = /\n([ \t]+)"/.exec(source);
 	const indent = match?.[1];
 	if (indent === undefined) return 2;
-	return indent.includes("\t") ? "\t" : indent.length;
+	return indent.includes('\t') ? '\t' : indent.length;
 }
 
 export interface StripResult {
@@ -57,12 +63,15 @@ export interface StripResult {
 	removed: string[];
 }
 
-function stripPackageJson(json: Json, declared: Required<EjectConfig>["packageJson"]): StripResult {
+function stripPackageJson(
+	json: Json,
+	declared: Required<EjectConfig>['packageJson'],
+): StripResult {
 	const removed: string[] = [];
 
-	for (const field of ["dependencies", "devDependencies"] as const) {
+	for (const field of ['dependencies', 'devDependencies'] as const) {
 		const section = json[field];
-		if (!section || typeof section !== "object") continue;
+		if (!section || typeof section !== 'object') continue;
 		const deps = section as Json;
 
 		const names = new Set<string>([SELF, ...(declared[field] ?? [])]);
@@ -77,12 +86,13 @@ function stripPackageJson(json: Json, declared: Required<EjectConfig>["packageJs
 	}
 
 	const scripts = json.scripts;
-	if (scripts && typeof scripts === "object") {
+	if (scripts && typeof scripts === 'object') {
 		const entries = scripts as Json;
 		const declaredNames = new Set(declared.scripts ?? []);
 		for (const name of Object.keys(entries)) {
 			const command = entries[name];
-			const invokesSelf = typeof command === "string" && INVOKES_SELF.test(command);
+			const invokesSelf =
+				typeof command === 'string' && INVOKES_SELF.test(command);
 			if (declaredNames.has(name) || invokesSelf) {
 				delete entries[name];
 				removed.push(`scripts.${name}`);
@@ -105,7 +115,7 @@ function stripPackageJson(json: Json, declared: Required<EjectConfig>["packageJs
  */
 export function stripPackageJsonSource(
 	source: string,
-	declared: Required<EjectConfig>["packageJson"],
+	declared: Required<EjectConfig>['packageJson'],
 ): {content: string; removed: string[]} | undefined {
 	let parsed: Json;
 	try {
@@ -117,8 +127,11 @@ export function stripPackageJsonSource(
 	const {json, removed} = stripPackageJson(parsed, declared);
 	if (removed.length === 0) return undefined;
 
-	const trailingNewline = source.endsWith("\n") ? "\n" : "";
-	return {content: JSON.stringify(json, null, detectIndent(source)) + trailingNewline, removed};
+	const trailingNewline = source.endsWith('\n') ? '\n' : '';
+	return {
+		content: JSON.stringify(json, null, detectIndent(source)) + trailingNewline,
+		removed,
+	};
 }
 
 /** Accumulates what a run removed, so the caller knows the lockfile is stale. */
@@ -134,26 +147,40 @@ export function emptyEjectReport(): EjectReport {
 	return {removed: [], dependencies: [], files: []};
 }
 
-export function recordRemoval(report: EjectReport, file: string, removed: string[]): void {
+export function recordRemoval(
+	report: EjectReport,
+	file: string,
+	removed: string[],
+): void {
 	report.files.push(file);
 	for (const entry of removed) {
 		report.removed.push(`${file}: ${entry}`);
-		const [section, ...rest] = entry.split(".");
-		const name = rest.join(".");
-		if ((section === "dependencies" || section === "devDependencies") && !report.dependencies.includes(name)) {
+		const [section, ...rest] = entry.split('.');
+		const name = rest.join('.');
+		if (
+			(section === 'dependencies' || section === 'devDependencies') &&
+			!report.dependencies.includes(name)
+		) {
 			report.dependencies.push(name);
 		}
 	}
 }
 
-export function createEjectTransform(config: Required<EjectConfig>, report?: EjectReport): Transform {
+export function createEjectTransform(
+	config: Required<EjectConfig>,
+	report?: EjectReport,
+): Transform {
 	return {
-		name: "eject-integration",
-		apply(files: VirtualFile[], _answers: Answers, ctx: TransformContext): VirtualFile[] {
+		name: 'eject-integration',
+		apply(
+			files: VirtualFile[],
+			_answers: Answers,
+			ctx: TransformContext,
+		): VirtualFile[] {
 			return files.map((file) => {
 				if (file.skip || file.binary || !isPackageJson(file.path)) return file;
 
-				const source = file.content.toString("utf8");
+				const source = file.content.toString('utf8');
 				const stripped = stripPackageJsonSource(source, config.packageJson);
 				if (!stripped) {
 					// Either nothing to remove, or malformed JSON in the template.
@@ -162,8 +189,10 @@ export function createEjectTransform(config: Required<EjectConfig>, report?: Eje
 				}
 
 				if (report) recordRemoval(report, file.path, stripped.removed);
-				ctx.log.debug(`eject: ${file.path} - removed ${stripped.removed.join(", ")}`);
-				return {...file, content: Buffer.from(stripped.content, "utf8")};
+				ctx.log.debug(
+					`eject: ${file.path} - removed ${stripped.removed.join(', ')}`,
+				);
+				return {...file, content: Buffer.from(stripped.content, 'utf8')};
 			});
 		},
 	};

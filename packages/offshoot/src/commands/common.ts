@@ -3,16 +3,28 @@
  * writing a transformed snapshot onto the template branch.
  */
 
-import {readFileSync, rmSync, statSync} from "node:fs";
-import {basename, join, resolve} from "node:path";
-import type {Answers, Logger, Operation, OffshootState, ResolvedConfig, VirtualFile} from "../types.js";
-import {loadTemplateConfig, resolveConfig} from "../config.js";
-import {parseSource, resolveRef, downloadTemplate, type ParsedSource} from "../source.js";
-import {buildTree} from "../pipeline.js";
-import {readState, stateFile, STATE_FILE} from "../state.js";
-import {writeTree, removePaths} from "../vfs.js";
-import * as g from "../git.js";
-import {matchesAny} from "../glob.js";
+import {readFileSync, rmSync, statSync} from 'node:fs';
+import {basename, join, resolve} from 'node:path';
+import type {
+	Answers,
+	Logger,
+	Operation,
+	OffshootState,
+	ResolvedConfig,
+	VirtualFile,
+} from '../types.js';
+import {loadTemplateConfig, resolveConfig} from '../config.js';
+import {
+	parseSource,
+	resolveRef,
+	downloadTemplate,
+	type ParsedSource,
+} from '../source.js';
+import {buildTree} from '../pipeline.js';
+import {readState, stateFile, STATE_FILE} from '../state.js';
+import {writeTree, removePaths} from '../vfs.js';
+import * as g from '../git.js';
+import {matchesAny} from '../glob.js';
 
 export interface PreparedTemplate {
 	source: ParsedSource;
@@ -24,7 +36,10 @@ export interface PreparedTemplate {
 	cleanup(): void;
 }
 
-export async function prepareTemplate(templateInput: string, ref: string | undefined): Promise<PreparedTemplate> {
+export async function prepareTemplate(
+	templateInput: string,
+	ref: string | undefined,
+): Promise<PreparedTemplate> {
 	const source = parseSource(templateInput);
 	const resolved = await resolveRef(source, ref);
 	const dir = await downloadTemplate(source, resolved.sha);
@@ -58,11 +73,13 @@ export function openProject(cwd: string): ProjectHandle {
 	const start = resolve(cwd);
 	g.assertGitAvailable();
 	if (!g.isRepo(start)) {
-		throw new Error(`${start} is not a git repository. offshoot needs the repository it created.`);
+		throw new Error(
+			`${start} is not a git repository. offshoot needs the repository it created.`,
+		);
 	}
 	const root = g.repoRoot(start);
 	const state = readState(root);
-	const branch = state.branch ?? "template";
+	const branch = state.branch ?? 'template';
 	if (!g.branchExists(root, branch)) {
 		throw new Error(
 			`Branch "${branch}" not found. It is the template branch offshoot merges from; ` +
@@ -87,10 +104,13 @@ export interface SnapshotOptions {
  * the diff between two snapshots of the same lineage, and `git merge` applies
  * it to the user's work.
  */
-export function commitSnapshot(options: SnapshotOptions): {sha: string; changed: boolean} {
+export function commitSnapshot(options: SnapshotOptions): {
+	sha: string;
+	changed: boolean;
+} {
 	const {root, branch, files} = options;
 
-	g.git(["checkout", branch], root);
+	g.git(['checkout', branch], root);
 
 	const previous = g.trackedFiles(root);
 	const preserved = new Map<string, {content: Buffer; executable: boolean}>();
@@ -102,7 +122,7 @@ export function commitSnapshot(options: SnapshotOptions): {sha: string; changed:
 		for (const path of previous) {
 			if (!matchesAny(path, options.skipIfExists)) continue;
 			try {
-				const absolute = join(root, ...path.split("/"));
+				const absolute = join(root, ...path.split('/'));
 				preserved.set(path, {
 					content: readFileSync(absolute),
 					executable: (statSync(absolute).mode & 0o111) !== 0,
@@ -119,13 +139,19 @@ export function commitSnapshot(options: SnapshotOptions): {sha: string; changed:
 	writeTree(root, toWrite);
 	for (const [path, entry] of preserved) {
 		writeTree(root, [
-			{path, content: entry.content, executable: entry.executable, binary: true, skip: true},
+			{
+				path,
+				content: entry.content,
+				executable: entry.executable,
+				binary: true,
+				skip: true,
+			},
 		]);
 	}
 
-	g.git(["add", "-A"], root);
+	g.git(['add', '-A'], root);
 	if (g.hasCommits(root) && g.stagedIsEmpty(root)) {
-		options.log.debug("template branch unchanged; nothing to commit");
+		options.log.debug('template branch unchanged; nothing to commit');
 		return {sha: g.headSha(root), changed: false};
 	}
 	g.commit(root, options.message);
@@ -141,7 +167,9 @@ export interface TransformForStateOptions {
 }
 
 /** Build the tree for a known state (used by update and rename). */
-export function transformForState(options: TransformForStateOptions): VirtualFile[] {
+export function transformForState(
+	options: TransformForStateOptions,
+): VirtualFile[] {
 	const {prepared, state} = options;
 	const files = buildTree({
 		dir: prepared.dir,
@@ -156,9 +184,15 @@ export function transformForState(options: TransformForStateOptions): VirtualFil
 	return [...files.filter((f) => f.path !== STATE_FILE), stateFile(state)];
 }
 
-export function commitMessageFor(template: string, sha: string, note?: string): string {
+export function commitMessageFor(
+	template: string,
+	sha: string,
+	note?: string,
+): string {
 	const short = sha.slice(0, 7);
-	return note ? `template: ${template}@${short} (${note})` : `template: ${template}@${short}`;
+	return note
+		? `template: ${template}@${short} (${note})`
+		: `template: ${template}@${short}`;
 }
 
 export {STATE_FILE};

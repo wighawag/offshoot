@@ -6,10 +6,23 @@
  * transformed snapshot.
  */
 
-import type {Answers, Logger, Operation, ResolvedConfig, TransformContext, VirtualFile} from "./types.js";
-import {readTree} from "./vfs.js";
-import {resolveTransforms, createPathInterpolationTransform} from "./transforms/index.js";
-import {createEjectTransform, type EjectReport} from "./transforms/eject-integration.js";
+import type {
+	Answers,
+	Logger,
+	Operation,
+	ResolvedConfig,
+	TransformContext,
+	VirtualFile,
+} from './types.js';
+import {readTree} from './vfs.js';
+import {
+	resolveTransforms,
+	createPathInterpolationTransform,
+} from './transforms/index.js';
+import {
+	createEjectTransform,
+	type EjectReport,
+} from './transforms/eject-integration.js';
 
 export interface BuildTreeOptions {
 	/** Directory the template was fetched into. */
@@ -35,7 +48,9 @@ export function buildTree(options: BuildTreeOptions): VirtualFile[] {
 	let files = readTree(options.dir, {
 		skipDirs: config.skipDirs,
 		skipFiles: config.skipFiles,
-		exclude: eject ? [...config.exclude, ...config.eject.exclude] : config.exclude,
+		exclude: eject
+			? [...config.exclude, ...config.eject.exclude]
+			: config.exclude,
 	});
 
 	const ctx: TransformContext = {
@@ -53,18 +68,25 @@ export function buildTree(options: BuildTreeOptions): VirtualFile[] {
 	const transforms = resolveTransforms(config.transforms);
 	// After the template's own transforms, so a custom transform can still add
 	// integration bits and have them stripped here.
-	if (eject) transforms.push(createEjectTransform(config.eject, options.ejectReport));
+	if (eject)
+		transforms.push(createEjectTransform(config.eject, options.ejectReport));
 	// Path interpolation runs last and always: by then no other strategy can
 	// reintroduce or consume a `{{name}}` path segment.
-	transforms.push(createPathInterpolationTransform(config.pathInterpolationExclude));
+	transforms.push(
+		createPathInterpolationTransform(config.pathInterpolationExclude),
+	);
 
 	for (const transform of transforms) {
 		const before = files.length;
 		files = transform.apply(files, options.answers, ctx);
 		if (!Array.isArray(files)) {
-			throw new Error(`Transform "${transform.name}" did not return a file array.`);
+			throw new Error(
+				`Transform "${transform.name}" did not return a file array.`,
+			);
 		}
-		options.log.debug(`transform ${transform.name}: ${before} -> ${files.length} file(s)`);
+		options.log.debug(
+			`transform ${transform.name}: ${before} -> ${files.length} file(s)`,
+		);
 	}
 
 	assertSanePaths(files);
@@ -74,7 +96,11 @@ export function buildTree(options: BuildTreeOptions): VirtualFile[] {
 function assertSanePaths(files: VirtualFile[]): void {
 	const seen = new Map<string, string>();
 	for (const file of files) {
-		if (file.path === "" || file.path.startsWith("/") || file.path.includes("..")) {
+		if (
+			file.path === '' ||
+			file.path.startsWith('/') ||
+			file.path.includes('..')
+		) {
 			throw new Error(`Transform produced an unsafe path: "${file.path}"`);
 		}
 		const existing = seen.get(file.path);

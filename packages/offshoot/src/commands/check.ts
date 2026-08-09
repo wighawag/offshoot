@@ -3,12 +3,12 @@
  * Exits non-zero when there is one, so CI can watch for template drift.
  */
 
-import {resolve} from "node:path";
-import type {Logger} from "../types.js";
-import {createLogger} from "../logger.js";
-import {readState} from "../state.js";
-import {parseSource, resolveRef, defaultTrack} from "../source.js";
-import * as g from "../git.js";
+import {resolve} from 'node:path';
+import type {Logger} from '../types.js';
+import {createLogger} from '../logger.js';
+import {readState} from '../state.js';
+import {parseSource, resolveRef, defaultTrack} from '../source.js';
+import * as g from '../git.js';
 
 export interface CheckOptions {
 	cwd: string;
@@ -36,8 +36,10 @@ export async function check(options: CheckOptions): Promise<CheckResult> {
 
 	const behind = resolved.sha !== state.ref;
 	if (behind) {
-		log.info(`Update available: ${state.ref.slice(0, 7)} -> ${resolved.sha.slice(0, 7)}`);
-		log.info(`  ${state.template}${track ? `#${track}` : ""}`);
+		log.info(
+			`Update available: ${state.ref.slice(0, 7)} -> ${resolved.sha.slice(0, 7)}`,
+		);
+		log.info(`  ${state.template}${track ? `#${track}` : ''}`);
 		log.info(`  run \`offshoot update\``);
 	} else {
 		log.info(`Up to date (${state.ref.slice(0, 7)}).`);
