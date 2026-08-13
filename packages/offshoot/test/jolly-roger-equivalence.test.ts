@@ -46,13 +46,49 @@ const NAME = 'my-app';
 /** A name that does not appear in the template. */
 const CLEAN_NAME = 'my-pirate-app';
 
+/**
+ * Pinned to a fixed jolly-roger commit rather than live `main`, so upstream
+ * evolution of the template can't silently break this equivalence suite (and
+ * with it every publish from this monorepo). This SHA predates the `contracts/`
+ * delegation library that create-jolly-roger's anchored patterns don't cover;
+ * the assertions below describe the template at exactly this commit. To
+ * re-verify equivalence against a newer jolly-roger, bump this SHA and update
+ * the expected `extra` list to match (offshoot supports any full commit SHA as
+ * a ref, same as a branch).
+ */
+const PINNED_REF = '3890d482dc8a0411be07ff981a2eb878563000d2';
+
+/**
+ * The occurrences `offshoot rename` changes that create-jolly-roger's *anchored*
+ * pattern list does not, at PINNED_REF. These are places the template name
+ * appears that no anchored pattern targets, so create-jolly-roger leaves the
+ * template's name behind and `rename` (which rewrites every occurrence) does not:
+ * the delegation contracts/tests, plus a log path in the e2e script. This list
+ * is expected to grow as the template gains more code containing its own name;
+ * regenerate it when bumping PINNED_REF. (`differences` staying empty is the
+ * stronger invariant: rename never MISSES anything the reference catches.)
+ */
+const EXTRA_OVER_REFERENCE = [
+	'contracts/src/core/Delegation.sol:58',
+	'contracts/src/core/Delegation.sol:83',
+	'contracts/test/js/Delegation.test.ts:60',
+	'contracts/test/js/SignatureUtils.test.ts:97',
+	'contracts/test/solidity/core/Delegation.t.sol:85',
+	'contracts/test/solidity/core/Delegation.t.sol:528',
+	'contracts/test/solidity/core/Delegation.t.sol:565',
+	'contracts/test/solidity/core/UsingDelegation.t.sol:64',
+	'contracts/test/solidity/core/UsingDelegation.t.sol:102',
+	'contracts/test/solidity/core/UsingDelegation.t.sol:201',
+	'scripts/run-e2e-tests.sh:85',
+];
+
 /** Skipped rather than failed when there is no network. */
 async function fetchTemplate(): Promise<
 	{dir: string; sha: string} | undefined
 > {
 	try {
 		const source = parseSource(TEMPLATE);
-		const {sha} = await resolveRef(source, 'main');
+		const {sha} = await resolveRef(source, PINNED_REF);
 		const dir = await downloadTemplate(source, sha);
 		return {dir, sha};
 	} catch {
@@ -170,17 +206,18 @@ describeOnline('acceptance: equivalence with create-jolly-roger', () => {
 		expect(leftovers).toEqual([]);
 	});
 
-	it('differs from the reference in exactly one place: the occurrence it misses', async () => {
+	it('differs from the reference only where anchored patterns miss the name', async () => {
 		const {extra} = compare(
 			await offshootOutput(NAME, true),
 			referenceOutput(NAME),
 		);
 
-		// scripts/run-e2e-tests.sh line 85 contains
-		//   NODE_LOG="${TMPDIR:-/tmp}/jolly-roger-e2e-node.log"
-		// No anchored pattern matches it, so create-jolly-roger leaves the
-		// template's name in the generated project; `rename` does not.
-		expect(extra).toEqual(['scripts/run-e2e-tests.sh:85']);
+		// The extras are occurrences of the template name that no anchored
+		// create-jolly-roger pattern targets (the delegation contracts/tests, and
+		// scripts/run-e2e-tests.sh:85's `jolly-roger-e2e-node.log`), so
+		// create-jolly-roger leaves the name in the generated project and
+		// `rename` (which rewrites every occurrence) does not.
+		expect(extra).toEqual(EXTRA_OVER_REFERENCE);
 	});
 
 	it('fixes that occurrence', async () => {
@@ -203,7 +240,7 @@ describeOnline('acceptance: equivalence with create-jolly-roger', () => {
 		);
 		expect(changedByReference).toBeGreaterThan(0);
 		expect(differences).toEqual([]);
-		expect(extra).toEqual(['scripts/run-e2e-tests.sh:85']);
+		expect(extra).toEqual(EXTRA_OVER_REFERENCE);
 	});
 
 	it('FINDING: refuses the name `my-app` without --force, because the template already contains it', async () => {
