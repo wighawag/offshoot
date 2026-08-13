@@ -14,6 +14,15 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 
+// CI runners have no git identity. GIT_AUTHOR_*/GIT_COMMITTER_* are honored above
+// config, so this gives every git op (including commits/merges/cherry-picks the
+// tool makes in freshly *cloned* temp repos, which don't inherit local config) an
+// identity — without depending on `git config --global` being set.
+process.env.GIT_AUTHOR_NAME ||= 'offshoot-fanout tests';
+process.env.GIT_AUTHOR_EMAIL ||= 'tests@offshoot-fanout.invalid';
+process.env.GIT_COMMITTER_NAME ||= 'offshoot-fanout tests';
+process.env.GIT_COMMITTER_EMAIL ||= 'tests@offshoot-fanout.invalid';
+
 const created: string[] = [];
 
 export function tempDir(prefix = 'offshoot-fanout-test-'): string {
