@@ -1,0 +1,61 @@
+{
+	"name": "offshoot-fanout",
+	"version": "0.0.0",
+	"description": "Propagate a template change down to all its descendant repos via `original` git remotes, with dry-run and conflict reporting. The maintainer-side companion to offshoot.",
+	"license": "MIT",
+	"author": "Ronan Sandford",
+	"type": "module",
+	"engines": {
+		"node": ">=20"
+	},
+	"keywords": [
+		"template",
+		"merge",
+		"propagate",
+		"fanout",
+		"offshoot",
+		"descendant",
+		"sync",
+		"conflict"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/wighawag/offshoot.git",
+		"directory": "packages/offshoot-fanout"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"bin": {
+		"offshoot-fanout": "./dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE",
+		"skills"
+	],
+	"dependencies": {},
+	"devDependencies": {
+		"@types/node": "^22.13.1",
+		"typescript": "^5.7.3",
+		"vitest": "^3.0.5"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+		"prepack": "rm -rf skills && cp -r ../../skills ./skills",
+		"prepublishOnly": "pnpm build",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	}
+}

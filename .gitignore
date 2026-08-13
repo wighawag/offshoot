@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+
+# staged into the package at pack time from the repo root; never edit these copies
+packages/offshoot-fanout/skills/

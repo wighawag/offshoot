@@ -1,0 +1,149 @@
+---
+name: reconcile-template-tree
+description: "Reconcile divergence across a template tree that tracks parents via `stem` git remotes (offshoot-fanout): find each change's home level, land it there once, cascade it to every descendant, resolve conflicts by intent, and verify each touched repo still builds. Use when the user wants a change moved up to its template home, propagated down to variants/descendants, a variant synced with its parent, or dependencies updated across the tree."
+---
+
+# Template tree reconciliation (with `offshoot-fanout`)
+
+Repos that derive from each other form a tree: a base template, variants that add a layer, and sites built on those variants. Each repo names its parent through a git remote called `stem` (the offshoot convention: an offshoot grows from a stem; `offshoot-fanout` flows changes down the stems). Work done in one repo constantly needs to move to another. Every change has a **home**: the highest level of the tree where it is still meaningful. Put it there once, then **cascade** it down. Anything landed below its home is a change every sibling silently misses.
+
+The mechanical parts — mapping the tree, cascading a merge top to bottom, and reporting exactly where conflicts block — are done by `offshoot-fanout`. The judgment parts — deciding a change's home, and resolving a conflict by intent rather than by blindly taking a side — are yours. Do not shortcut them.
+
+## 0. The tool
+
+`offshoot-fanout` is the maintainer-side companion to `offshoot`. Subcommands:
+
+```
+offshoot-fanout fanout          propagate a change down the hierarchy (default)
+offshoot-fanout drift           list descendant commits not yet in their parent (candidate backports)
+offshoot-fanout backport        cherry-pick a descendant commit up onto an ancestor (its home), optionally cascade
+offshoot-fanout discover        find repos that share ancestry; show the tree + wiring; optionally wire + save a registry
+offshoot-fanout link            set/create the `stem` remote on repo(s)
+offshoot-fanout rename-remote   bulk-rename the parent remote (e.g. original -> stem)
+```
+
+The parent remote defaults to `stem`; `--remote <name>` overrides it everywhere. `fanout`, `discover --add-remotes`, `backport`, and `rename-remote` honor `--dry-run` (read-only). A saved hierarchy lives at `~/.offshoot-stems/<root>.json`; pass `--registry <file>` to `fanout`/`drift`/`backport` to use it instead of scanning. Run `offshoot-fanout <subcommand> --help` for options.
+
+If `offshoot-fanout` is not on PATH, run the built CLI directly — build it once in the `offshoot` repo, then invoke `node <offshoot>/packages/offshoot-fanout/dist/cli.js …` in place of `offshoot-fanout …` below.
+
+This skill ships with the package; `offshoot-fanout skills install` is what copies it into `~/.agents/skills`. It is a copy, so re-run that after upgrading the package to refresh it.
+
+`offshoot-fanout` only merges repos that **share git history** with their parent (created by cloning/forking). A repo in the family that shares no history (scaffolded with transforms, like an `offshoot` project) cannot be merged — it is a **hand port**, never a merge. `discover` surfaces this: such repos form their own ancestry family or show no shared commits.
+
+## 1. Map the tree (discover it, never assume it)
+
+    offshoot-fanout discover <folder> --remote stem
+
+This scans the folder, groups repos by shared commit history, and proposes a parent→child tree per family, marking each repo's `stem` wiring (`✓` wired, `⚠` unwired). Direction (which member is the root) is a *proposal* — root = fewest commits, tie-broken by oldest HEAD — because direction can't be proven once both sides diverged past the fork. When you act on it, anchor with `--root <repo>`.
+
+Run it rather than trusting any snapshot. Sites get built on these templates without any list being updated, and a repo can drift far behind its parent before anyone notices. Membership is decided by shared ancestry + the `stem` remote, **not** by a `template-` prefix in the name — many `template-*` repos are unrelated.
+
+Confirm shared history before planning any merge, since a repo can look related and not be:
+
+    git -C <child> merge-base HEAD stem/main      # non-empty = mergeable; empty = hand port
+
+Persist the tree once you trust it, then reuse it instead of re-scanning:
+
+    offshoot-fanout discover <folder> --remote stem --save --root <root>     # writes ~/.offshoot-stems/<root>.json
+    offshoot-fanout fanout --registry ~/.offshoot-stems/<root>.json …        # or drift / backport --registry …
+
+The registry records the **wired** tree (real `stem` parents, not the ancestry proposal), with each repo's `stemUrl` (null = unwired, a TODO to fix with `discover --add-remotes` or `link`).
+
+Done when you can name the parent of every repo in play (or state it has none), and know which share history with their parent and which are hand-ports.
+
+## 2. Triage: what needs doing
+
+Before deciding anything, get the current state of the tree in one report. Run `status` against the registry (or the folder):
+
+    offshoot-fanout status --registry ~/.offshoot-stems/<root>.json
+
+It reports, per wired root:
+
+- **downstream** — a `fanout --dry-run` of the root: who merges cleanly, who **conflicts** (with the conflicting files), and who is **blocked** behind a conflict. A conflict here is the first thing to resolve (§5) before anything below it can cascade.
+- **upstream** — drift: each repo's commits not yet in its `stem` parent. These are **candidate backports** to review in §3.
+
+`status` is read-only (fetches objects only) and exits non-zero when a downstream conflict/error/dirty tree needs attention. Its output is the work list: unwired repos to wire (§1), conflicts to resolve (§5), and drift to triage (§3). If nothing is listed, the tree is in sync — stop.
+
+## 3. Find each change's home
+
+Ask what the change actually depends on, climbing the tree until the answer stops being meaningful:
+
+- nothing beyond the base stack (SvelteKit, service worker, PWA, build config, CI, error/404 handling) → the **base template**
+- a layer's distinctive tooling (e.g. Tailwind/plugins/`.prose`; mdsvex/markdown/blog/RSS; wallets/viem/contracts/shadcn) → the **variant that introduces that layer**
+- site content, branding, copy, images, deployment identity → stays in the **leaf**
+
+The test: if a sibling would want it, it belongs upstream. If it would be dead code or nonsense in a sibling, it is too specific and stays put.
+
+Split mixed commits. A commit bundling a generic fix with leaf-specific content gets re-authored upstream as only the generic part. Cherry-pick preserves authorship when history is shared and the commit is clean and self-contained; otherwise re-apply by hand with a message explaining the reasoning rather than the diff.
+
+Done when every change in play is assigned to exactly one home, with the reason stated.
+
+## 4. Land it, then cascade
+
+Land the change once, at its home, and let merges carry it. Editing the same logical change in two repos independently guarantees a conflict later.
+
+From the home repo (the landing point), cascade downward with `offshoot-fanout`, which fetches each parent's **local** HEAD so an intermediate merge flows to the leaves in one pass — no push required:
+
+    offshoot-fanout --dry-run                 # see what merges and where it conflicts
+    offshoot-fanout                           # clean tree: merge down to every leaf in one pass
+
+If the dry-run reports a conflict, **don't** run plain `offshoot-fanout` (it aborts on conflict and makes no progress). Instead, leave the merge in progress at the blocking child so you can resolve it:
+
+    offshoot-fanout --leave-conflicts         # merges into the blocking child, leaves the conflict there
+
+Now resolve the conflict in that child (§5), commit to complete the merge, then re-run `offshoot-fanout` from the home repo. The resolved child reports `up to date`, and the change cascades past it to the rest of the subtree.
+
+A node that fails (conflict/error/dirty) is reported, and its descendants are marked `skipped` — the change never silently reaches them. Resolve the blocker, re-run, and the skipped subtree proceeds. Repos with no shared history are never merged by the tool; if the change is relevant there, hand-port it.
+
+### When the change lives in a descendant (backport up first)
+
+If the change you want to reconcile was made in a descendant but its home is an ancestor (a fix in a site that's really generic), move it **up** before cascading. Find candidates with `drift`, then cherry-pick one onto its home with `backport`:
+
+    offshoot-fanout drift <folder>                                  # list each descendant's commits not yet in its parent
+    offshoot-fanout backport <sha> --from <descendant> --to <home> --cascade
+
+`--to` defaults to the descendant's immediate `stem` parent; pass a higher ancestor when the home is further up. `--cascade` runs `fanout` from the home afterward, spreading the now-upstream change back down to every sibling and leaf. The judgement of *which* descendant commit belongs upstream stays with you; `drift` only surfaces the candidates.
+
+Done when every descendant of the landing point has been merged and named, plus any required hand-ports.
+
+## 5. Resolve conflicts by intent
+
+Conflicts are the leaf's specialisation meeting the parent's generic version.
+
+- The descendant's version wins when the hunk is its **specialisation**: theme, content, UI kit, config values.
+- The parent's version wins when the hunk is the **generic improvement** being propagated.
+- Hunks containing one of each get merged by hand.
+- **Lockfiles are never hand-merged**: check out either side, then run `pnpm install` to regenerate.
+
+Read every resolved file afterwards. Taking a whole file with `--ours` or `--theirs` silently drops the other side's real change. `--leave-conflicts` is the mode that lets you do this; plain `fanout` (and `--dry-run`) abort and discard the in-progress merge, so nothing gets resolved.
+
+## 6. Verify, because a clean merge proves nothing
+
+For every repo touched by the cascade (`offshoot-fanout` names them in its report — `merged`, `conflict`, `skipped`):
+
+    pnpm install
+    pnpm check                                 # or the repo's svelte-check script
+    pnpm build <mode>                          # use a real mode when the repo takes one
+
+Build with a **real mode**. Some of these apps only load their config under a specific mode, so a mode-less build ships an empty config and looks fine.
+
+Establish a **baseline** first when a repo already has failures, so your regressions are distinguishable from what was already broken:
+
+    git stash && pnpm install && pnpm check && git stash pop && pnpm install
+
+Prefer a real browser check over reading the code when behaviour is UI-level and you changed it. This tree has produced bugs that typecheck cleanly and only appear at runtime: a promise that never settled, an error escaping an un-awaited click handler.
+
+Done when each touched repo installs, typechecks with zero errors, and builds.
+
+## Dependencies
+
+Before changing any dependency or running an update, watch for two classes of trap that break **silently** rather than loudly:
+
+- **Ceiling deps** — versions deliberately held below latest because a newer major breaks something quietly (e.g. a framework major that collapses inferred load types to `{}`, or a parser freeze that silently disables a plugin). An outdated check will flag them as behind; that is expected, not a task. If a bump is forced, say so in the report rather than doing it.
+- **Deployed-artifact source deps** — a dependency that ships source which compiles to a deployed artifact (e.g. Solidity `.sol` that `src/` imports) is pinned exactly: bumping it changes bytecode that must keep matching what is deployed on chain. These look like ordinary toolchain packages in `package.json`; audit which deps ship such source and which `src/` actually imports, rather than assuming. The toolchain around them is free to move. After any contracts-adjacent change, compile with the **production** profile (the deploy scripts use it, and it enables the optimizer, so a default-profile build differs) and compare to the committed deployment — expect the executable code to match byte for byte, differing only in the trailing metadata blob.
+
+Also: where `package.json` has a `packageManager` field, the CI workflow must not also set the setup action's `version:` (both fails with `ERR_PNPM_BAD_PM_VERSION`). A deliberate `split` + `minify` build strategy is sometimes required so a bundle doesn't stall on a throttled connection — don't revert it without reason. And a build **mode** must actually reach the config loader: a script that never receives the mode ships an empty config, so confirm the mode is consumed rather than forwarded to the child command.
+
+## Report
+
+Per repo: what changed, which home it landed at and why, what was cascaded, how any judgement-call conflict was resolved, and the verification output. Call out what you could not verify, what you deliberately did not bump, and any pre-existing failure found along the way. A merge is not done until the result builds.

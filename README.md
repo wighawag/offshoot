@@ -589,10 +589,11 @@ Two follow-ups for the jolly-roger template itself, both surfaced by `offshoot d
 
 ## Packages
 
-A pnpm workspace publishing two packages, both MIT:
+A pnpm workspace publishing three packages, all MIT:
 
-- **`offshoot`** - library plus CLI, the primary identity.
+- **`offshoot`** - library plus CLI, the primary identity. Scaffold a project from a git template and later pull in template improvements via an orphan-branch merge. For descendants that **don't** share history with the template.
 - **`create-offshoot`** - generic initializer, so `npm create offshoot user/repo my-app` works.
+- **`offshoot-fanout`** - maintainer-side companion: push one template change out to **every** descendant at once via `original`-remote `git merge`, for hierarchies that **do** share history (e.g. template-svelte → tailwind → shadcn → jolly-roger).
 
 ## Development
 

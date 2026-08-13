@@ -1,0 +1,50 @@
+export {DEFAULT_REMOTE} from './core.js';
+export type {
+	Repo,
+	PropagateOptions,
+	PropagateResult,
+	PropagateStatus,
+	Tree,
+	LinkStatus,
+	LinkResult,
+	RenameStatus,
+	RenameResult,
+	AncestryRepo,
+	DiscoveredEdge,
+	FamilyTree,
+	Registry,
+	RegistryRepo,
+	DriftResult,
+	BackportResult,
+	BackportOptions,
+	RootStatus,
+} from './core.js';
+export {
+	normalizeUrl,
+	discoverRepos,
+	buildTree,
+	childrenOf,
+	propagate,
+	linkRemote,
+	renameRemotes,
+	ancestryRepo,
+	discoverAncestry,
+	registryDir,
+	registryPath,
+	saveRegistry,
+	loadRegistry,
+	driftTree,
+	backport,
+	statusTree,
+} from './core.js';
+export type {CommitLog} from './git.js';
+export type {Summary} from './report.js';
+export {
+	formatReport,
+	summarize,
+	formatAncestryReport,
+	formatRenameResults,
+	formatLinkResults,
+	formatDriftReport,
+	formatStatusReport,
+} from './report.js';
