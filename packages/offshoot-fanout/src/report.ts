@@ -22,6 +22,8 @@ interface Glyph {
 
 function glyph(status: PropagateStatus): Glyph {
 	switch (status) {
+		case 'ignored':
+			return {mark: '–', color: GRAY};
 		case 'source':
 			return {mark: '◆', color: CYAN};
 		case 'merged':
@@ -41,6 +43,8 @@ function glyph(status: PropagateStatus): Glyph {
 
 function label(status: PropagateStatus): string {
 	switch (status) {
+		case 'ignored':
+			return 'ignored';
 		case 'source':
 			return 'source';
 		case 'merged':
@@ -62,7 +66,12 @@ function stripAnsi(s: string): string {
 	return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-/** Render a propagation result as an indented, colorized tree. */
+/**
+ * Render a propagation result as an indented, colorized tree. Every line names
+ * the node as `repo@branch`: the destination branch is the thing that used to
+ * be invisible, and an update landing on the wrong branch is exactly the
+ * failure this reports away.
+ */
 export function formatReport(
 	root: PropagateResult,
 	{color = true} = {},
@@ -77,7 +86,8 @@ export function formatReport(
 	) => {
 		const branch = isRoot ? '' : isLast ? '└─ ' : '├─ ';
 		const {mark, color: c} = glyph(node.status);
-		let line = `${prefix}${branch}${c}${mark}${RESET} ${node.repo.name} ${DIM}${label(node.status)}${RESET}`;
+		const name = `${node.repo.name}${GRAY}@${node.branch}${RESET}`;
+		let line = `${prefix}${branch}${c}${mark}${RESET} ${name} ${DIM}${label(node.status)}${RESET}`;
 		if (!isRoot && node.message) {
 			line += ` ${GRAY}— ${node.message}${RESET}`;
 		}
@@ -89,6 +99,12 @@ export function formatReport(
 				color ? `${prefix}${cont}${GRAY}${f}${RESET}` : `${prefix}${cont}${f}`,
 			);
 		}
+		if (node.verify) {
+			const vc = node.verify.status === 'passed' ? GREEN : RED;
+			const vm = node.verify.status === 'passed' ? '✓' : '✗';
+			const vline = `${prefix}${cont}${vc}${vm}${RESET} ${GRAY}${node.verify.message}${RESET}`;
+			lines.push(color ? vline : stripAnsi(vline));
+		}
 		const children = node.children;
 		children.forEach((child, i) =>
 			render(child, prefix + cont, i === children.length - 1, false),
@@ -96,6 +112,11 @@ export function formatReport(
 	};
 
 	render(root, '', true, true);
+
+	for (const note of root.notes) {
+		const line = `${GRAY}– ${note}${RESET}`;
+		lines.push(color ? line : stripAnsi(line));
+	}
 	return lines.join('\n');
 }
 
@@ -106,6 +127,9 @@ export interface Summary {
 	errors: number;
 	skipped: number;
 	dirty: number;
+	ignored: number;
+	/** Merged nodes whose opt-in `verify` command failed. */
+	verifyFailed: number;
 }
 
 /** Count each status across the tree (excluding the source root). */
@@ -117,6 +141,8 @@ export function summarize(root: PropagateResult): Summary {
 		errors: 0,
 		skipped: 0,
 		dirty: 0,
+		ignored: 0,
+		verifyFailed: 0,
 	};
 	const walk = (n: PropagateResult) => {
 		if (n.status === 'merged') s.merged++;
@@ -125,6 +151,8 @@ export function summarize(root: PropagateResult): Summary {
 		else if (n.status === 'error') s.errors++;
 		else if (n.status === 'skipped') s.skipped++;
 		else if (n.status === 'dirty') s.dirty++;
+		else if (n.status === 'ignored') s.ignored++;
+		if (n.verify?.status === 'failed') s.verifyFailed++;
 		n.children.forEach(walk);
 	};
 	walk(root);
@@ -262,9 +290,10 @@ export function formatDriftReport(
 	const lines: string[] = [];
 	for (const r of results) {
 		if (r.ahead.length === 0 && !r.error) continue; // skip clean repos from the report
+		const name = `${r.repo.name}${GRAY}@${r.branch}${RESET}`;
 		const head = r.error
-			? `${RED}!${RESET} ${r.repo.name} ${GRAY}— ${r.error}${RESET}`
-			: `${r.ahead.length > 0 ? YELLOW : DIM}${r.ahead.length > 0 ? '▲' : '•'}${RESET} ${r.repo.name} ${GRAY}(${r.ahead.length} ahead)${RESET}`;
+			? `${RED}!${RESET} ${name} ${GRAY}— ${r.error}${RESET}`
+			: `${r.ahead.length > 0 ? YELLOW : DIM}${r.ahead.length > 0 ? '▲' : '•'}${RESET} ${name} ${GRAY}(${r.ahead.length} ahead of ${r.stem})${RESET}`;
 		lines.push(color ? head : stripAnsi(head));
 		for (const c of r.ahead) {
 			const line = `${GRAY}  ${c.sha.slice(0, 8)}  ${c.subject}${RESET}`;
@@ -288,20 +317,24 @@ export function formatStatusReport(
 	}
 	const lines: string[] = [];
 	for (const r of results) {
-		const head = `${CYAN}◆${RESET} ${r.root.name} ${GRAY}(root, ${r.repoCount} repo(s))${RESET}`;
+		const head = `${CYAN}◆${RESET} ${r.root.name} ${GRAY}(root, ${r.nodeCount} node(s) across ${r.repoCount} repo(s))${RESET}`;
 		lines.push(color ? head : stripAnsi(head));
 
 		const c = r.counts;
-		const ds = `  downstream: ${c.conflict} conflict, ${c.skipped} blocked, ${c.merged} merged, ${c.upToDate} up to date, ${c.error} error, ${c.dirty} dirty`;
+		const ds = `  downstream: ${c.conflict} conflict, ${c.skipped} blocked, ${c.merged} merged, ${c.upToDate} up to date, ${c.error} error, ${c.dirty} dirty, ${c.ignored} ignored`;
 		lines.push(color ? `${DIM}${ds}${RESET}` : ds);
 
 		for (const cf of r.conflicts) {
-			const line = `  ${RED}✗${RESET} ${cf.repo.name} ${GRAY}CONFLICT (${cf.files.length} file(s))${RESET}`;
+			const line = `  ${RED}✗${RESET} ${cf.repo.name}${GRAY}@${cf.branch}${RESET} ${GRAY}CONFLICT (${cf.files.length} file(s))${RESET}`;
 			lines.push(color ? line : stripAnsi(line));
 			for (const f of cf.files) lines.push(`    ${GRAY}${f}${RESET}`);
 		}
 		if (r.blocked.length > 0) {
 			const line = `  ${GRAY}⊘ blocked: ${r.blocked.join(', ')}${RESET}`;
+			lines.push(color ? line : stripAnsi(line));
+		}
+		if (r.ignored.length > 0) {
+			const line = `  ${GRAY}– ignored: ${r.ignored.join(', ')}${RESET}`;
 			lines.push(color ? line : stripAnsi(line));
 		}
 
@@ -310,10 +343,14 @@ export function formatStatusReport(
 			lines.push(color ? hdr : stripAnsi(hdr));
 			for (const d of r.drift) {
 				const line = d.error
-					? `    ${RED}!${RESET} ${d.repo.name} ${GRAY}— ${d.error}${RESET}`
-					: `    ${YELLOW}▲${RESET} ${d.repo.name} ${GRAY}(${d.ahead.length} ahead)${RESET}`;
+					? `    ${RED}!${RESET} ${d.repo.name}${GRAY}@${d.branch} — ${d.error}${RESET}`
+					: `    ${YELLOW}▲${RESET} ${d.repo.name}${GRAY}@${d.branch} (${d.ahead.length} ahead of ${d.stem})${RESET}`;
 				lines.push(color ? line : stripAnsi(line));
 			}
+		}
+		for (const note of r.notes) {
+			const line = `  ${GRAY}– ${note}${RESET}`;
+			lines.push(color ? line : stripAnsi(line));
 		}
 		lines.push('');
 	}

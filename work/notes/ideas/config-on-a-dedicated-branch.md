@@ -3,7 +3,19 @@ title: Read offshoot.config from a dedicated branch, so a template repo carries 
 type: idea
 status: incubating
 created: 2026-08-09
+updated: 2026-08-15
 ---
+
+## Shipped in offshoot-fanout; still parked for offshoot (2026-08-15)
+
+`offshoot-fanout` now reads its per-repo config from an orphan branch (default `offshoot`, file `fanout.config.json`, `--config-branch` to override, `--no-config` to disable), written by `offshoot-fanout config set` with pure plumbing. **This does not unpark the idea for `offshoot` itself**, because the hard part below does not exist in fanout:
+
+- **No config-to-content pairing problem.** The whole difficulty here is "which config commit corresponds to content commit X", and it only arises because `offshoot` re-transforms *older* refs (`rename`, `new user/repo#<old-ref>`). `offshoot-fanout` only ever operates on the current local HEADs of repos it merges between; it never re-transforms an older ref. So there is no `configRef` to record, no timestamp correlation, no pin flag, and no `--config-ref` escape hatch. Read the tip, use the tip.
+- **The motivation is stronger there, too.** Fanout config is genuinely per-repo (each repo's branch list, each repo's verify command), so an in-tree file at the root template would cascade into all seven descendants and conflict at every level on every change. An orphan branch has no merge base with anything, so it never propagates and never conflicts. For fanout the branch is not purity, it is the only shape that works.
+
+What transfers back if `offshoot` ever builds this: the flat-vs-nested naming constraint (a branch named exactly `offshoot` forbids any `offshoot/*` branch, since a ref file cannot also be a directory, and fanout keeps the flat name while documenting the nested alternative), the `git show <branch>:<file>` read with an `origin/<branch>` fallback for fresh clones, and the plumbing write (`hash-object -w` + `mktree` + `commit-tree` + `update-ref`) that never touches the working tree, the index or the current branch.
+
+Everything below is the original 2026-08-09 note, unchanged, and still describes `offshoot`'s situation.
 
 ## The proposal
 

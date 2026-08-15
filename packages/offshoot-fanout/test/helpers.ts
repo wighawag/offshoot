@@ -103,3 +103,63 @@ export function setRemote(root: string, name: string, url: string): void {
 export function headOf(root: string): string {
 	return git(['rev-parse', 'HEAD'], root).trim();
 }
+
+/** Contents of `rel` on `branch`, without checking it out. */
+export function fileOnBranch(
+	root: string,
+	branch: string,
+	rel: string,
+): string {
+	return git(['show', `${branch}:${rel}`], root);
+}
+
+export function branchSha(root: string, branch: string): string {
+	return git(['rev-parse', branch], root).trim();
+}
+
+export function currentBranchOf(root: string): string {
+	return git(['rev-parse', '--abbrev-ref', 'HEAD'], root).trim();
+}
+
+export function worktreeCount(root: string): number {
+	return git(['worktree', 'list', '--porcelain'], root)
+		.split('\n')
+		.filter((l) => l.startsWith('worktree ')).length;
+}
+
+/**
+ * Put raw text at `fanout.config.json` on an orphan config branch, using the
+ * same plumbing a user would — deliberately NOT the package's `writeConfig`, so
+ * reading is tested against an independently produced branch (and so malformed
+ * JSON can be written, which `writeConfig` refuses).
+ */
+export function writeConfigBranch(
+	root: string,
+	content: string,
+	branch = 'offshoot',
+): void {
+	const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+		cwd: root,
+		input: content,
+		encoding: 'utf8',
+	}).trim();
+	const tree = execFileSync('git', ['mktree'], {
+		cwd: root,
+		input: `100644 blob ${blob}\tfanout.config.json\n`,
+		encoding: 'utf8',
+	}).trim();
+	let parent: string | null = null;
+	try {
+		parent = git(
+			['rev-parse', '--verify', `refs/heads/${branch}`],
+			root,
+		).trim();
+	} catch {
+		/* branch does not exist yet */
+	}
+	const args = ['commit-tree', tree];
+	if (parent) args.push('-p', parent);
+	args.push('-m', 'config');
+	const commit = git(args, root).trim();
+	git(['update-ref', `refs/heads/${branch}`, commit], root);
+}

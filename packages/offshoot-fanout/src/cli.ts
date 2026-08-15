@@ -2,7 +2,9 @@
 import path from 'node:path';
 import {parseArgs} from 'node:util';
 import {
+	DEFAULT_CONFIG_BRANCH,
 	DEFAULT_REMOTE,
+	CONFIG_FILE,
 	discoverAncestry,
 	discoverRepos,
 	formatAncestryReport,
@@ -12,6 +14,7 @@ import {
 	formatReport,
 	linkRemote,
 	loadRegistry,
+	matchIgnore,
 	propagate,
 	renameRemotes,
 	saveRegistry,
@@ -20,6 +23,9 @@ import {
 	backport,
 	statusTree,
 	formatStatusReport,
+	planRepo,
+	resolveConfig,
+	writeConfig,
 } from './index.js';
 import {
 	availableSkills,
@@ -27,7 +33,7 @@ import {
 	installSkills,
 	isInstalled,
 } from './skills.js';
-import type {Repo} from './index.js';
+import type {PropagateResult, Repo} from './index.js';
 
 const SUBCOMMANDS = new Set([
 	'fanout',
@@ -37,6 +43,7 @@ const SUBCOMMANDS = new Set([
 	'drift',
 	'backport',
 	'status',
+	'config',
 	'skills',
 ]);
 
@@ -50,16 +57,28 @@ Options:
   --base-dir <path>      dir to scan for sibling repos (default: parent of --source)
   --repos <path> ...     explicit repo paths instead of scanning (repeatable)
   --registry <file>      use a saved hierarchy (~/.offshoot-stems/<root>.json) instead of scanning
-  --branch <name>        branch to merge from each parent (default: main)
+  --branch <name>        GLOBAL override: make every repo a single node at this branch
   --remote <name>        parent-template remote name (default: stem)
-  --dry-run              report only; no merge commits, no branch changes
+  --config-branch <name> branch holding each repo's ${CONFIG_FILE} (default: ${DEFAULT_CONFIG_BRANCH})
+  --no-config            ignore config branches entirely (defaults everywhere)
+  --verify               run each repo's configured \`verify\` command in merged nodes
+  --ignore <path|name>   exclude a repo from the tree (repeatable; adds to the registry's list)
+  --dry-run              report only; no merge commits, no branch changes, no worktrees
   --leave-conflicts      keep a conflicted merge in progress for manual fixing
   --no-color             plain text report (no ANSI escapes)
   -h, --help             show this help
 
+The unit of work is a NODE: a (repo, branch) pair. A repo with no config is one node: \`main\` if it
+exists, else the checked-out branch. A repo whose config branch lists \`branches\` contributes one node
+per listed branch, and a branch with a \`stem\` merges from that sibling branch in the same repo.
+
+The target branch does NOT have to be checked out: if it is, the merge happens in place; otherwise it
+happens in a temporary linked worktree (kept, and its path reported, when \`--leave-conflicts\` leaves a
+conflict there). Nothing is ever \`git checkout\`ed. Linked worktrees are never treated as repos.
+
 Changes flow downward only: from --source to its children, then their children, and so on. Each
-child merges its parent's current LOCAL head, so an intermediate merge cascades to the leaves in
-one pass — no push required. Exit code is non-zero if any descendant conflicts/errors/has a dirty tree.
+child merges its parent's current LOCAL ref, so an intermediate merge cascades to the leaves in
+one pass — no push required. Exit code is non-zero if any node conflicts/errors/has a dirty tree.
 `;
 
 const DISCOVER_USAGE = `offshoot-fanout discover — find repos that share common git ancestry
@@ -78,9 +97,13 @@ Options:
   --root <path>          explicit root repo; only its descendant subtree is wired
   --yes                  apply --add-remotes, accepting the proposed tree
   --save                 write a registry file per family to ~/.offshoot-stems/<root>.json
+  --ignore <path|name>   exclude a repo (repeatable); --save merges these into the registry's
+                         \`ignore\` array, which is preserved rather than clobbered
   --dry-run              show what would be added; do not add any remote (still saves a registry)
   --no-color             plain text report (no ANSI escapes)
   -h, --help             show this help
+
+Linked worktrees (\`git worktree add\`) are never listed: they are the same repository as their parent.
 `;
 
 const LINK_USAGE = `offshoot-fanout link — set/create the parent remote on repo(s)
@@ -118,15 +141,21 @@ const DRIFT_USAGE = `offshoot-fanout drift — find descendant commits not yet i
 Usage:
   offshoot-fanout drift [folder] [options]
 
-For each repo that has a \`stem\` parent, lists commits it has that the parent lacks (\`git log stem/main..HEAD\`).
+For each node that has a stem, lists the commits it has that its stem lacks (\`git log <stem>..<branch>\`).
 These are changes a descendant made that may belong upstream — review them, then backport the relevant ones.
 
 Options:
   --registry <file>      use a saved hierarchy instead of scanning a folder
   --remote <name>        parent-remote name (default: stem)
-  --branch <name>        branch to compare (default: main)
+  --branch <name>        GLOBAL override: compare this branch everywhere
+  --config-branch <name> branch holding each repo's ${CONFIG_FILE} (default: ${DEFAULT_CONFIG_BRANCH})
+  --no-config            ignore config branches entirely
+  --ignore <path|name>   exclude a repo (repeatable)
   --no-color             plain text report (no ANSI escapes)
   -h, --help             show this help
+
+Drift is reported per NODE (\`repo@branch\`), against that node's stem: the parent repo's primary
+branch for a root branch, or the sibling branch named by its \`stem\` for an in-repo branch.
 `;
 
 const BACKPORT_USAGE = `offshoot-fanout backport — move a descendant commit up to an ancestor (its "home")
@@ -139,12 +168,16 @@ immediate \`stem\` parent; give a higher ancestor explicitly when the change's h
 --cascade then runs \`fanout\` from that ancestor to spread the now-upstream change back down to every
 descendant.
 
+The commit lands on the ancestor's NODE branch, which does not have to be checked out (same rule as a
+merge: never \`git checkout\`, use a temporary worktree instead).
+
 Options:
   --from <path>          repo the commit lives in (required)
   --to <path>            target ancestor (default: the from repo's immediate stem parent)
   --registry <file>      use a saved hierarchy to resolve the default --to and the cascade
   --remote <name>        parent-remote name (default: stem)
-  --branch <name>        branch to fetch from (default: main)
+  --branch <name>        GLOBAL override: fetch from, and land on, this branch everywhere
+                         (default: each repo's own primary branch, usually main)
   --cascade              after a clean cherry-pick, fan out from the ancestor down the tree
   --dry-run              show the commit that would be cherry-picked; do not apply it
   --leave-conflicts      keep a conflicted cherry-pick in progress for manual resolution
@@ -161,13 +194,52 @@ For each wired root (a repo whose \`stem\` remote has descendants), reports a co
   downstream: a \`fanout --dry-run\` of the root — who merges, who conflicts (with files), who is blocked;
   upstream:   drift — each repo's commits not yet in its \`stem\` parent (candidate backports).
 
-Use this first to see what needs doing. Read-only (fetches objects only).
+Use this first to see what needs doing. Read-only: it fetches objects and computes merges in memory
+(\`git merge-tree\`), so no branch, index or working tree is touched.
 
 Options:
   --registry <file>      use a saved hierarchy instead of scanning a folder
   --remote <name>        parent-remote name (default: stem)
-  --branch <name>        branch to compare/merge (default: main)
+  --branch <name>        GLOBAL override: use this branch everywhere
+  --config-branch <name> branch holding each repo's ${CONFIG_FILE} (default: ${DEFAULT_CONFIG_BRANCH})
+  --no-config            ignore config branches entirely
+  --ignore <path|name>   exclude a repo (repeatable)
   --no-color             plain text report (no ANSI escapes)
+  -h, --help             show this help
+`;
+
+const CONFIG_USAGE = `offshoot-fanout config — show or write a repo's config, which lives on an ORPHAN BRANCH
+
+Usage:
+  offshoot-fanout config show [--repo <path>]
+  offshoot-fanout config set --file <path> [--repo <path>]
+
+Config lives on a branch (default \`${DEFAULT_CONFIG_BRANCH}\`), in \`${CONFIG_FILE}\`, so the template's working
+tree carries no offshoot-specific file. It is read with \`git show\` (never checked out) and falls
+back to \`origin/${DEFAULT_CONFIG_BRANCH}\` on a fresh clone. Absent config means the defaults, so a repo that matches
+the defaults stays completely free of offshoot references.
+
+\`config set\` writes with plumbing (hash-object / mktree / commit-tree / update-ref): your working
+tree, index and current branch are never touched, and the orphan branch is created if absent.
+
+    {
+      "branches": {"main": {}, "variant/full": {"stem": "main"}},
+      "verify": "pnpm install && pnpm --filter ./web check"
+    }
+
+\`branches\` is opt-in: when present, ONLY the listed branches participate, which is how scratch and
+unrelated branches stay out of the cascade without being named. A branch with no \`stem\` is a root
+node, fed by the cross-repo \`stem\` remote. \`verify\` only ever runs under \`fanout --verify\`.
+
+Naming: the default branch name is flat (\`${DEFAULT_CONFIG_BRANCH}\`). Git cannot hold both \`${DEFAULT_CONFIG_BRANCH}\` and any
+\`${DEFAULT_CONFIG_BRANCH}/*\` branch, so pick one convention: keep the flat name, or use a nested config branch
+(\`--config-branch ${DEFAULT_CONFIG_BRANCH}/fanout\`) and never create the flat one.
+
+Options:
+  --repo <path>          repo to read/write (default: cwd)
+  --file <path>          config JSON to write (\`set\` only)
+  --config-branch <name> branch to read/write (default: ${DEFAULT_CONFIG_BRANCH})
+  --no-config            (show) report what the defaults would be, ignoring any config branch
   -h, --help             show this help
 `;
 
@@ -189,11 +261,13 @@ const TOP_USAGE = `offshoot-fanout — keep a template tree's stems current, fro
 
 Subcommands:
   fanout          propagate a change DOWN the hierarchy (default)
+  status          one-command triage of a wired hierarchy (read-only)
   drift           list descendant commits not yet in their parent (candidate backports)
   backport        cherry-pick a descendant commit UP onto an ancestor (its home), optionally cascade
   discover        find repos that share ancestry; optionally wire remotes; optionally save a registry
   link            set/create the parent remote on repo(s)
   rename-remote   bulk-rename the parent remote (e.g. original -> stem)
+  config          show or write a repo's config (which lives on an orphan branch)
 
 Run \`offshoot-fanout <subcommand> --help\` for details. The parent-template remote is named \`stem\`
 by default (\`--remote\` overrides it). A saved hierarchy lives at ~/.offshoot-stems/<root>.json
@@ -218,6 +292,8 @@ function usageFor(sub: string): string {
 			return BACKPORT_USAGE;
 		case 'status':
 			return STATUS_USAGE;
+		case 'config':
+			return CONFIG_USAGE;
 		case 'skills':
 			return SKILLS_USAGE;
 		default:
@@ -253,18 +329,27 @@ function parseOpts(
 	};
 }
 
-/** Resolve a repo set from an explicit --registry file, else scan a folder. */
+/**
+ * Resolve a repo set from an explicit --registry file, else scan a folder,
+ * together with the registry's persisted `ignore` list.
+ */
 function getRepos(
 	folder: string,
 	registry: string | undefined,
 	remoteName: string,
-): Repo[] {
+): {repos: Repo[]; ignore: string[]} {
 	if (registry) {
 		const r = loadRegistry(registry);
-		if (r) return r.repos;
+		if (r) return {repos: r.repos, ignore: r.ignore};
 		console.error(`registry not found or unreadable: ${registry}`);
 	}
-	return discoverRepos(folder, remoteName);
+	return {repos: discoverRepos(folder, remoteName), ignore: []};
+}
+
+/** `--ignore` occurrences merged with a registry's persisted list. */
+function mergeIgnore(values: Record<string, unknown>, fromRegistry: string[]) {
+	const cli = (values.ignore as string[] | undefined) ?? [];
+	return [...new Set([...fromRegistry, ...cli])];
 }
 
 export async function main(): Promise<number> {
@@ -293,6 +378,8 @@ export async function main(): Promise<number> {
 			return runBackport(rest);
 		case 'status':
 			return runStatus(rest);
+		case 'config':
+			return runConfig(rest);
 		case 'skills':
 			return runSkills(rest);
 		default:
@@ -307,8 +394,12 @@ async function runFanout(rest: string[]): Promise<number> {
 		'base-dir': {type: 'string'},
 		repos: {type: 'string', multiple: true},
 		registry: {type: 'string'},
-		branch: {type: 'string', default: 'main'},
+		branch: {type: 'string'},
 		remote: {type: 'string', default: DEFAULT_REMOTE},
+		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
+		'no-config': {type: 'boolean', default: false},
+		verify: {type: 'boolean', default: false},
+		ignore: {type: 'string', multiple: true},
 		'dry-run': {type: 'boolean', default: false},
 		'leave-conflicts': {type: 'boolean', default: false},
 		'no-color': {type: 'boolean', default: false},
@@ -323,10 +414,13 @@ async function runFanout(rest: string[]): Promise<number> {
 		: path.dirname(sourcePath);
 
 	let repos: string[] | undefined;
+	let registryIgnore: string[] = [];
 	if (values.registry) {
 		const r = loadRegistry(values.registry as string);
-		if (r) repos = r.repos.map((x) => x.path);
-		else {
+		if (r) {
+			repos = r.repos.map((x) => x.path);
+			registryIgnore = r.ignore;
+		} else {
 			console.error(
 				`registry not found or unreadable: ${values.registry as string}`,
 			);
@@ -340,20 +434,39 @@ async function runFanout(rest: string[]): Promise<number> {
 		sourcePath,
 		baseDir,
 		repos,
-		branch: values.branch as string,
+		branch: values.branch as string | undefined,
 		remoteName,
+		configBranch: values['config-branch'] as string,
+		useConfig: !values['no-config'],
+		verify: values.verify as boolean,
+		ignore: mergeIgnore(values, registryIgnore),
 		dryRun: values['dry-run'] as boolean,
 		leaveConflicts: values['leave-conflicts'] as boolean,
 	});
 	console.log(formatReport(result, {color: !values['no-color']}));
 	const s = summarize(result);
-	const bad = s.conflicts + s.errors + s.dirty;
+	const bad = s.conflicts + s.errors + s.dirty + s.verifyFailed;
 	if (bad > 0) {
 		console.log(
-			`\n${bad} descendant(s) need attention (${s.conflicts} conflict, ${s.errors} error, ${s.dirty} dirty).`,
+			`\n${bad} node(s) need attention (${s.conflicts} conflict, ${s.errors} error, ${s.dirty} dirty, ${s.verifyFailed} verify failed).`,
 		);
 	}
+	for (const dir of keptWorktrees(result)) {
+		console.log(`  left in place for inspection: ${dir}`);
+		console.log(`    when done: git -C <repo> worktree remove --force ${dir}`);
+	}
 	return bad > 0 ? 1 : 0;
+}
+
+/** Temporary worktrees deliberately left behind (unresolved conflict, failed verify). */
+function keptWorktrees(result: PropagateResult): string[] {
+	const out: string[] = [];
+	const walk = (n: PropagateResult) => {
+		if (n.worktree) out.push(n.worktree);
+		n.children.forEach(walk);
+	};
+	walk(result);
+	return out;
 }
 
 function isDescendantOf(
@@ -379,13 +492,15 @@ function runDiscover(rest: string[]): number {
 		root: {type: 'string'},
 		yes: {type: 'boolean', default: false},
 		save: {type: 'boolean', default: false},
+		ignore: {type: 'string', multiple: true},
 		'dry-run': {type: 'boolean', default: false},
 		'no-color': {type: 'boolean', default: false},
 	});
 
 	const folder = path.resolve(positionals[0] ?? process.cwd());
 	const remoteName = values.remote as string;
-	const trees = discoverAncestry(folder, remoteName);
+	const ignore = (values.ignore as string[] | undefined) ?? [];
+	const trees = discoverAncestry(folder, remoteName, ignore);
 	if (trees.length === 0) {
 		console.log('No git repos found.');
 		return 0;
@@ -433,11 +548,13 @@ function runDiscover(rest: string[]): number {
 	}
 
 	if (values.save) {
-		const repos = discoverRepos(folder, remoteName);
+		const repos = discoverRepos(folder, remoteName).filter(
+			(r) => !matchIgnore(r, ignore),
+		);
 		const rootFilter = values.root
 			? path.resolve(values.root as string)
 			: undefined;
-		const files = saveRegistry(repos, remoteName, rootFilter);
+		const files = saveRegistry(repos, remoteName, rootFilter, ignore);
 		if (files.length === 0) {
 			console.log('\nNo multi-repo families found; nothing saved.');
 		} else {
@@ -506,17 +623,29 @@ function runDrift(rest: string[]): number {
 	const {values, positionals} = parseOpts(rest, {
 		registry: {type: 'string'},
 		remote: {type: 'string', default: DEFAULT_REMOTE},
-		branch: {type: 'string', default: 'main'},
+		branch: {type: 'string'},
+		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
+		'no-config': {type: 'boolean', default: false},
+		ignore: {type: 'string', multiple: true},
 		'no-color': {type: 'boolean', default: false},
 	});
 	const remoteName = values.remote as string;
 	const folder = path.resolve(positionals[0] ?? process.cwd());
-	const repos = getRepos(
+	const {repos, ignore} = getRepos(
 		folder,
 		values.registry as string | undefined,
 		remoteName,
 	);
-	const results = driftTree(repos, remoteName, values.branch as string);
+	const results = driftTree(
+		repos,
+		remoteName,
+		values.branch as string | undefined,
+		{
+			configBranch: values['config-branch'] as string,
+			useConfig: !values['no-config'],
+			ignore: mergeIgnore(values, ignore),
+		},
+	);
 	console.log(formatDriftReport(results, {color: !values['no-color']}));
 	return 0;
 }
@@ -527,7 +656,7 @@ async function runBackport(rest: string[]): Promise<number> {
 		to: {type: 'string'},
 		registry: {type: 'string'},
 		remote: {type: 'string', default: DEFAULT_REMOTE},
-		branch: {type: 'string', default: 'main'},
+		branch: {type: 'string'},
 		cascade: {type: 'boolean', default: false},
 		'dry-run': {type: 'boolean', default: false},
 		'leave-conflicts': {type: 'boolean', default: false},
@@ -543,7 +672,7 @@ async function runBackport(rest: string[]): Promise<number> {
 	}
 	const remoteName = values.remote as string;
 	const fromPath = path.resolve(from);
-	const repos = getRepos(
+	const {repos} = getRepos(
 		path.dirname(fromPath),
 		values.registry as string | undefined,
 		remoteName,
@@ -553,7 +682,7 @@ async function runBackport(rest: string[]): Promise<number> {
 		fromPath,
 		commit,
 		toPath: values.to ? path.resolve(values.to as string) : undefined,
-		branch: values.branch as string,
+		branch: values.branch as string | undefined,
 		remoteName,
 		repos,
 		dryRun: values['dry-run'] as boolean,
@@ -568,14 +697,16 @@ async function runBackport(rest: string[]): Promise<number> {
 				: result.status === 'dry-run'
 					? '•'
 					: '!';
-	console.log(`${mark} ${result.ancestorName || '?'} — ${result.message}`);
+	console.log(
+		`${mark} ${result.ancestorName || '?'}@${result.ancestorBranch} — ${result.message}`,
+	);
 
 	if (result.status === 'backported' && values.cascade) {
 		console.log(`\nCascading from ${result.ancestorName}…`);
 		const cascaded = await propagate({
 			sourcePath: result.ancestorPath,
 			repos: repos.map((r) => r.path),
-			branch: values.branch as string,
+			branch: values.branch as string | undefined,
 			remoteName,
 		});
 		console.log(formatReport(cascaded, {color: !values['no-color']}));
@@ -587,22 +718,124 @@ async function runStatus(rest: string[]): Promise<number> {
 	const {values, positionals} = parseOpts(rest, {
 		registry: {type: 'string'},
 		remote: {type: 'string', default: DEFAULT_REMOTE},
-		branch: {type: 'string', default: 'main'},
+		branch: {type: 'string'},
+		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
+		'no-config': {type: 'boolean', default: false},
+		ignore: {type: 'string', multiple: true},
 		'no-color': {type: 'boolean', default: false},
 	});
 	const remoteName = values.remote as string;
 	const folder = path.resolve(positionals[0] ?? process.cwd());
-	const repos = getRepos(
+	const {repos, ignore} = getRepos(
 		folder,
 		values.registry as string | undefined,
 		remoteName,
 	);
-	const results = await statusTree(repos, remoteName, values.branch as string);
+	const results = await statusTree(
+		repos,
+		remoteName,
+		values.branch as string | undefined,
+		{
+			configBranch: values['config-branch'] as string,
+			useConfig: !values['no-config'],
+			ignore: mergeIgnore(values, ignore),
+		},
+	);
 	console.log(formatStatusReport(results, {color: !values['no-color']}));
 	const needsWork = results.some(
 		(r) => r.counts.conflict > 0 || r.counts.error > 0 || r.counts.dirty > 0,
 	);
 	return needsWork ? 1 : 0;
+}
+
+function runConfig(rest: string[]): number {
+	const {values, positionals} = parseOpts(rest, {
+		repo: {type: 'string'},
+		file: {type: 'string'},
+		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
+		'no-config': {type: 'boolean', default: false},
+	});
+	const verb = positionals[0] ?? 'show';
+	if (verb !== 'show' && verb !== 'set') {
+		console.error(
+			`Unknown config command \`${verb}\`. Try \`show\` or \`set\`.`,
+		);
+		return 2;
+	}
+	const repoPath = path.resolve(
+		(values.repo as string | undefined) ?? process.cwd(),
+	);
+	const configBranch = values['config-branch'] as string;
+
+	if (verb === 'set') {
+		const file = values.file as string | undefined;
+		if (!file) {
+			console.error(
+				'config set: --file <path> is required. See `offshoot-fanout config --help`.',
+			);
+			return 1;
+		}
+		const result = writeConfig(repoPath, file, {branch: configBranch});
+		console.log(`${result.ok ? '✓' : '!'} ${repoPath} — ${result.message}`);
+		return result.ok ? 0 : 1;
+	}
+
+	const useConfig = !values['no-config'];
+	const resolved = resolveConfig(repoPath, {
+		branch: configBranch,
+		enabled: useConfig,
+	});
+	const repo = {
+		name: path.basename(repoPath),
+		path: repoPath,
+		originUrl: null,
+		originalUrl: null,
+	};
+	const plan = planRepo(repo, {configBranch, useConfig});
+
+	console.log(`${repo.name}  (${repoPath})`);
+	switch (resolved.source) {
+		case 'branch':
+		case 'remote-branch':
+			console.log(`  source: ${resolved.ref}`);
+			console.log(
+				JSON.stringify(resolved.config, null, 2)
+					.split('\n')
+					.map((l) => `  ${l}`)
+					.join('\n'),
+			);
+			break;
+		case 'disabled':
+			console.log('  source: none (--no-config)');
+			break;
+		case 'error':
+			console.log(`  source: ${resolved.ref} (UNUSABLE: ${resolved.error})`);
+			break;
+		default:
+			console.log(
+				resolved.note
+					? `  source: none (${resolved.note}); defaults apply`
+					: `  source: none (no \`${configBranch}\` or \`origin/${configBranch}\` branch); defaults apply`,
+			);
+	}
+
+	console.log('\n  resolved nodes:');
+	if (plan.error) {
+		console.log(`    ! ${plan.error}`);
+	} else {
+		for (const b of plan.branches) {
+			const kind =
+				b.stem === null
+					? `root (fed by the \`stem\` remote)${b.name === plan.primary ? ', primary' : ''}`
+					: `stem: ${b.stem} (in-repo)`;
+			console.log(`    ${repo.name}@${b.name} — ${kind}`);
+		}
+		if (plan.note) console.log(`    (${plan.note})`);
+	}
+	console.log(
+		`  verify: ${plan.verify ? `${plan.verify}   (only runs with --verify)` : 'none'}`,
+	);
+	return resolved.source === 'error' ? 1 : 0;
 }
 
 function runSkills(rest: string[]): number {

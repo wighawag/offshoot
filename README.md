@@ -593,7 +593,7 @@ A pnpm workspace publishing three packages, all MIT:
 
 - **`offshoot`** - library plus CLI, the primary identity. Scaffold a project from a git template and later pull in template improvements via an orphan-branch merge. For descendants that **don't** share history with the template.
 - **`create-offshoot`** - generic initializer, so `npm create offshoot user/repo my-app` works.
-- **`offshoot-fanout`** - maintainer-side companion: push one template change out to **every** descendant at once via `original`-remote `git merge`, for hierarchies that **do** share history (e.g. template-svelte → tailwind → shadcn → jolly-roger).
+- **`offshoot-fanout`** - maintainer-side companion: push one template change out to **every** descendant at once via `stem`-remote `git merge`, for hierarchies that **do** share history (e.g. template-svelte → tailwind → shadcn → jolly-roger). Its unit of work is a `(repo, branch)` node, so a repo holding sibling variants as branches cascades in the right order, and a branch that is not checked out is merged in a temporary worktree rather than by `git checkout`.
 
 ## Development
 

@@ -5,7 +5,7 @@ description: "Reconcile divergence across a template tree that tracks parents vi
 
 # Template tree reconciliation (with `offshoot-fanout`)
 
-Repos that derive from each other form a tree: a base template, variants that add a layer, and sites built on those variants. Each repo names its parent through a git remote called `stem` (the offshoot convention: an offshoot grows from a stem; `offshoot-fanout` flows changes down the stems). Work done in one repo constantly needs to move to another. Every change has a **home**: the highest level of the tree where it is still meaningful. Put it there once, then **cascade** it down. Anything landed below its home is a change every sibling silently misses.
+Repos that derive from each other form a tree: a base template, variants that add a layer, and sites built on those variants. Each repo names its parent through a git remote called `stem` (the offshoot convention: an offshoot grows from a stem; `offshoot-fanout` flows changes down the stems). A repo can also hold sibling variants as **branches**, where one branch derives from another the same way a child repo derives from its parent, so the real unit is a **node**: a `(repo, branch)` pair. Work done in one node constantly needs to move to another. Every change has a **home**: the highest level of the tree where it is still meaningful. Put it there once, then **cascade** it down. Anything landed below its home is a change every sibling silently misses.
 
 The mechanical parts — mapping the tree, cascading a merge top to bottom, and reporting exactly where conflicts block — are done by `offshoot-fanout`. The judgment parts — deciding a change's home, and resolving a conflict by intent rather than by blindly taking a side — are yours. Do not shortcut them.
 
@@ -15,14 +15,16 @@ The mechanical parts — mapping the tree, cascading a merge top to bottom, and 
 
 ```
 offshoot-fanout fanout          propagate a change down the hierarchy (default)
+offshoot-fanout status          one-command triage of a wired hierarchy (read-only)
 offshoot-fanout drift           list descendant commits not yet in their parent (candidate backports)
 offshoot-fanout backport        cherry-pick a descendant commit up onto an ancestor (its home), optionally cascade
 offshoot-fanout discover        find repos that share ancestry; show the tree + wiring; optionally wire + save a registry
 offshoot-fanout link            set/create the `stem` remote on repo(s)
 offshoot-fanout rename-remote   bulk-rename the parent remote (e.g. original -> stem)
+offshoot-fanout config          show or write a repo's config (which lives on an orphan branch)
 ```
 
-The parent remote defaults to `stem`; `--remote <name>` overrides it everywhere. `fanout`, `discover --add-remotes`, `backport`, and `rename-remote` honor `--dry-run` (read-only). A saved hierarchy lives at `~/.offshoot-stems/<root>.json`; pass `--registry <file>` to `fanout`/`drift`/`backport` to use it instead of scanning. Run `offshoot-fanout <subcommand> --help` for options.
+The parent remote defaults to `stem`; `--remote <name>` overrides it everywhere. `fanout`, `discover --add-remotes`, `backport`, and `rename-remote` honor `--dry-run` (read-only). A saved hierarchy lives at `~/.offshoot-stems/<root>.json`; pass `--registry <file>` to `fanout`/`drift`/`backport`/`status` to use it instead of scanning. Run `offshoot-fanout <subcommand> --help` for options.
 
 If `offshoot-fanout` is not on PATH, run the built CLI directly — build it once in the `offshoot` repo, then invoke `node <offshoot>/packages/offshoot-fanout/dist/cli.js …` in place of `offshoot-fanout …` below.
 
@@ -37,6 +39,45 @@ This skill ships with the package; `offshoot-fanout skills install` is what copi
 This scans the folder, groups repos by shared commit history, and proposes a parent→child tree per family, marking each repo's `stem` wiring (`✓` wired, `⚠` unwired). Direction (which member is the root) is a *proposal* — root = fewest commits, tie-broken by oldest HEAD — because direction can't be proven once both sides diverged past the fork. When you act on it, anchor with `--root <repo>`.
 
 Run it rather than trusting any snapshot. Sites get built on these templates without any list being updated, and a repo can drift far behind its parent before anyone notices. Membership is decided by shared ancestry + the `stem` remote, **not** by a `template-` prefix in the name — many `template-*` repos are unrelated.
+
+### The tree is nodes, not repos
+
+The cross-repo `stem` edge above is only one of the two kinds:
+
+- **cross-repo**: the `stem` remote, the parent's primary branch merges into each of the child's root branches.
+- **in-repo**: a branch whose stem is another branch *in the same repo*. One repo can hold four sibling variants of a template as branches (`main`, `variant/full`, `variant/offline`, `website`) plus scratch branches, and `variant/full` derives from `main` exactly the way a child repo derives from its parent.
+
+Every report line is `repo@branch`, so the destination branch is always visible. Two traps this exists to close, both observed on a live tree:
+
+- A repo whose checked-out branch is *not* its node branch used to receive the update on the checked-out branch (a `variant/full` checkout swallowed a `main` update, and the report still said `merged`). The tool now never `git checkout`s: it merges in place if the target branch is checked out, otherwise in a temporary worktree, and says which branch it merged into.
+- A **linked worktree** (`git worktree add`, e.g. `jolly-roger-work`) has a `.git` and inherits its repo's `stem` remote, so it looks exactly like a separate repo and produced a permanent "refusing to merge unrelated histories" false alarm. It is now always skipped and mentioned once as a worktree of its repo. Never add one to a registry or a `--repos` list.
+
+A repo with no config is one node (`main`, else the checked-out branch), so a tree that only uses `main` needs no configuration at all. Where in-repo topology exists, declare it on the repo's **config branch** (§1b). Check what the tool resolved before planning anything:
+
+    offshoot-fanout config show --repo <repo>
+
+### 1b. Config lives on an orphan branch
+
+A template carries no offshoot file in its working tree. Per-repo config sits on an orphan branch (default `offshoot`) in `fanout.config.json`, read with `git show` and never checked out:
+
+```json
+{
+  "branches": {"main": {}, "variant/full": {"stem": "main"}},
+  "verify": "pnpm install && pnpm --filter ./web check"
+}
+```
+
+`branches` is opt-in: when present, **only** the listed branches participate, which is how scratch branches (`work`) and unrelated variants (`variant/offline`, `website`) stay out of the cascade without being named. A branch with no `stem` is a root node fed by the cross-repo `stem` remote.
+
+Write it with plumbing, which never touches the working tree or the current branch:
+
+    offshoot-fanout config set --repo <repo> --file ./fanout.config.json
+
+A branch named `offshoot` that holds no `fanout.config.json` is a name collision, not config: the defaults apply and the report says so. A config file that is present and does not parse is a hard error, and the node plus everything under it is skipped without a merge being attempted.
+
+Do not propose an in-tree config file instead. Its content is per-repo, so a file at the root template would cascade to every descendant and conflict at every level on every change; an orphan branch has no merge base with anything, so it never propagates and never conflicts. Note the naming constraint: a branch named exactly `offshoot` forbids any `offshoot/*` branch, so keep the flat name or use `--config-branch offshoot/fanout` consistently.
+
+Repos that exist on disk but must stay out of the tree (a deprecated template whose folder has not been deleted yet) are **maintainer-local** state, not repo config: use `--ignore <path-or-name>` (repeatable), and persist it with `discover --save`, which merges it into the registry's `ignore` array rather than clobbering it. Ignored nodes stay visible in the report as `ignored`; if something is missing from a report entirely, it was never a node, so find out why before assuming it is fine.
 
 Confirm shared history before planning any merge, since a repo can look related and not be:
 
@@ -60,9 +101,9 @@ Before deciding anything, get the current state of the tree in one report. Run `
 It reports, per wired root:
 
 - **downstream** — a `fanout --dry-run` of the root: who merges cleanly, who **conflicts** (with the conflicting files), and who is **blocked** behind a conflict. A conflict here is the first thing to resolve (§5) before anything below it can cascade.
-- **upstream** — drift: each repo's commits not yet in its `stem` parent. These are **candidate backports** to review in §3.
+- **upstream**, drift: each node's commits not yet in its stem (the parent repo's primary branch, or the sibling branch it derives from). These are **candidate backports** to review in §3.
 
-`status` is read-only (fetches objects only) and exits non-zero when a downstream conflict/error/dirty tree needs attention. Its output is the work list: unwired repos to wire (§1), conflicts to resolve (§5), and drift to triage (§3). If nothing is listed, the tree is in sync — stop.
+`status` is read-only (it fetches objects and computes merges in memory with `git merge-tree`, so no branch, index or working tree is touched) and exits non-zero when a downstream conflict/error/dirty tree needs attention. Because a dry-run evaluates each node against its parent's *current* state, a node under one that would merge can read `up to date`; that is expected, and a real run cascades it. Its output is the work list: unwired repos to wire (§1), conflicts to resolve (§5), and drift to triage (§3). If nothing is listed, the tree is in sync — stop.
 
 ## 3. Find each change's home
 
@@ -87,11 +128,13 @@ From the home repo (the landing point), cascade downward with `offshoot-fanout`,
     offshoot-fanout --dry-run                 # see what merges and where it conflicts
     offshoot-fanout                           # clean tree: merge down to every leaf in one pass
 
-If the dry-run reports a conflict, **don't** run plain `offshoot-fanout` (it aborts on conflict and makes no progress). Instead, leave the merge in progress at the blocking child so you can resolve it:
+If the dry-run reports a conflict, **don't** run plain `offshoot-fanout` (it aborts on conflict and makes no progress). Instead, leave the merge in progress at the blocking node so you can resolve it:
 
-    offshoot-fanout --leave-conflicts         # merges into the blocking child, leaves the conflict there
+    offshoot-fanout --leave-conflicts         # merges into the blocking node, leaves the conflict there
 
-Now resolve the conflict in that child (§5), commit to complete the merge, then re-run `offshoot-fanout` from the home repo. The resolved child reports `up to date`, and the change cascades past it to the rest of the subtree.
+Now resolve the conflict in that node (§5), commit to complete the merge, then re-run `offshoot-fanout` from the home repo. The resolved node reports `up to date`, and the change cascades past it to the rest of the subtree.
+
+When the conflicted node's branch was not checked out, the merge is sitting in a **temporary worktree** whose path the report prints. Resolve it there and commit; the branch is the same one, so the result lands correctly. Do not `git checkout` the branch in the main worktree to "fix" it.
 
 A node that fails (conflict/error/dirty) is reported, and its descendants are marked `skipped` — the change never silently reaches them. Resolve the blocker, re-run, and the skipped subtree proceeds. Repos with no shared history are never merged by the tool; if the change is relevant there, hand-port it.
 
@@ -119,13 +162,25 @@ Read every resolved file afterwards. Taking a whole file with `--ours` or `--the
 
 ## 6. Verify, because a clean merge proves nothing
 
-For every repo touched by the cascade (`offshoot-fanout` names them in its report — `merged`, `conflict`, `skipped`):
+Each repo can declare its own check command once, on its config branch, so nobody has to rediscover it per repo (these repos typically have no root `check` script and need something like `pnpm --filter ./web check`):
+
+```json
+{"verify": "pnpm install && pnpm --filter ./web check"}
+```
+
+Then run the cascade with verification on, and read the pass/fail reported per node in the same tree output:
+
+    offshoot-fanout --verify
+
+It is opt-in by design: `verify` is a command string read from a git ref, so it never runs unless you ask. A failing verify does not un-merge anything; it tells you which node to go fix. If that node was merged in a temporary worktree, the worktree is kept and its path printed, so reproduce the failure there. Remove it (`git -C <repo> worktree remove --force <path>`) once done, and check `git worktree list` for any you left behind.
+
+For every node touched by the cascade that has no `verify` (or when you need more than it covers), do it by hand:
 
     pnpm install
     pnpm check                                 # or the repo's svelte-check script
     pnpm build <mode>                          # use a real mode when the repo takes one
 
-Build with a **real mode**. Some of these apps only load their config under a specific mode, so a mode-less build ships an empty config and looks fine.
+Build with a **real mode**. Some of these apps only load their config under a specific mode, so a mode-less build ships an empty config and looks fine. When a node was merged in a temporary worktree, that worktree is gone by the time you read the report: check out or verify the branch itself, do not assume the repo's current checkout reflects the merge.
 
 Establish a **baseline** first when a repo already has failures, so your regressions are distinguishable from what was already broken:
 
@@ -133,7 +188,7 @@ Establish a **baseline** first when a repo already has failures, so your regress
 
 Prefer a real browser check over reading the code when behaviour is UI-level and you changed it. This tree has produced bugs that typecheck cleanly and only appear at runtime: a promise that never settled, an error escaping an un-awaited click handler.
 
-Done when each touched repo installs, typechecks with zero errors, and builds.
+Done when each touched node installs, typechecks with zero errors, and builds, and when a repo declares `verify`, that its `--verify` result is green (or its failure is reported).
 
 ## Dependencies
 
@@ -146,4 +201,4 @@ Also: where `package.json` has a `packageManager` field, the CI workflow must no
 
 ## Report
 
-Per repo: what changed, which home it landed at and why, what was cascaded, how any judgement-call conflict was resolved, and the verification output. Call out what you could not verify, what you deliberately did not bump, and any pre-existing failure found along the way. A merge is not done until the result builds.
+Per node (`repo@branch`): what changed, which home it landed at and why, what was cascaded, how any judgement-call conflict was resolved, and the verification output. Name the branch, never just the repo: "merged into jolly-roger" is the report that hid a lost update for weeks. Call out what you could not verify, what you deliberately did not bump, and any pre-existing failure found along the way. A merge is not done until the result builds.

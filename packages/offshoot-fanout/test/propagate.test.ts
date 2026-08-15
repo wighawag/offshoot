@@ -85,7 +85,7 @@ describe('propagate (integration with real git repos)', () => {
 		const c = b.children[0]!;
 		expect(c.status).toBe('skipped');
 		expect(c.message).toContain('conflict');
-		expect(report).toContain('⊘ c skipped');
+		expect(report).toContain('⊘ c@main skipped');
 
 		// the conflict was aborted, so b and c are untouched
 		expect(readFile(bDir, 'file.txt')).toBe('b-change\n');

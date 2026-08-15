@@ -7,30 +7,58 @@ import {
 	cherryPick,
 	cherryPickAbort,
 	commitSubject,
-	commitsAhead,
+	commitsBetween,
 	conflictedFiles,
 	getRemoteUrl,
 	git,
 	headCommitDate,
 	isClean,
 	isGitRepo,
+	isLinkedWorktree,
+	listWorktrees,
 	mergeAbort,
 	mergeCommitFiles,
+	refSha,
 	renameRemote,
+	runCommand,
 	stagedFiles,
 } from './git.js';
+import {
+	DEFAULT_REMOTE,
+	asLinkedWorktree,
+	buildTree,
+	childrenOf,
+	discoverRepos,
+	matchIgnore,
+	normalizeUrl,
+	repoFromPath,
+	samePath,
+	type Repo,
+} from './repo.js';
+import {
+	childNodes,
+	createPlanner,
+	nodeKey,
+	nodeLabel,
+	type ChildNode,
+	type EdgeKind,
+	type NodeRef,
+} from './nodes.js';
+import {DEFAULT_CONFIG_BRANCH} from './config.js';
+import {closeWorkspace, openWorkspace} from './workspace.js';
 
-/** Default name of the parent-template remote. */
-export const DEFAULT_REMOTE = 'stem';
-
-export interface Repo {
-	name: string;
-	path: string;
-	/** `origin` remote URL — the repo's own identity. */
-	originUrl: string | null;
-	/** Parent-template remote URL (named `remoteName`, default `stem`), or null. */
-	originalUrl: string | null;
-}
+export {
+	DEFAULT_REMOTE,
+	asLinkedWorktree,
+	buildTree,
+	childrenOf,
+	discoverLinkedWorktrees,
+	discoverRepos,
+	matchIgnore,
+	normalizeUrl,
+	repoFromPath,
+} from './repo.js';
+export type {LinkedWorktree, Repo, Tree} from './repo.js';
 
 export type PropagateStatus =
 	| 'source'
@@ -39,16 +67,33 @@ export type PropagateStatus =
 	| 'conflict'
 	| 'dirty'
 	| 'error'
-	| 'skipped';
+	| 'skipped'
+	| 'ignored';
+
+export interface VerifyOutcome {
+	status: 'passed' | 'failed';
+	command: string;
+	message: string;
+}
 
 export interface PropagateResult {
 	repo: Repo;
-	parent: Repo | null;
+	/** The branch this node merges INTO: the destination the tool controls. */
+	branch: string;
+	/** How this node is fed: from the parent repo, from a sibling branch, or the source. */
+	edge: EdgeKind;
+	parent: NodeRef | null;
 	status: PropagateStatus;
 	/** Files changed by the merge, or conflicting files. */
 	files: string[];
 	message: string;
+	/** A temporary worktree deliberately left in place holding an unresolved conflict. */
+	worktree: string | null;
+	/** Result of the opt-in `verify` command, when it ran. */
+	verify: VerifyOutcome | null;
 	children: PropagateResult[];
+	/** Root only: what was excluded from the node set and why. */
+	notes: string[];
 }
 
 export interface PropagateOptions {
@@ -58,20 +103,22 @@ export interface PropagateOptions {
 	baseDir?: string;
 	/** Explicit repo paths; bypasses scanning when provided. */
 	repos?: string[];
-	/** Branch to fetch/merge from the parent. Default: `main`. */
+	/** Global branch override: every repo becomes a single node at this branch. */
 	branch?: string;
 	/** Parent-template remote name. Default: `stem`. */
 	remoteName?: string;
-	/** Report only; perform fetch + `--no-commit` merge then abort. */
+	/** Report only; no merge commits, no ref updates, no worktrees. */
 	dryRun?: boolean;
 	/** On conflict, leave the merge in progress for manual resolution instead of aborting. */
 	leaveConflicts?: boolean;
-}
-
-export interface Tree {
-	repos: Repo[];
-	/** normalized originUrl -> repo, for resolving a child's parent remote to a local clone. */
-	byOrigin: Map<string, Repo>;
+	/** Config branch to read per-repo config from. Default: `offshoot`. */
+	configBranch?: string;
+	/** Set false to ignore config branches entirely. Default: true. */
+	useConfig?: boolean;
+	/** Run each repo's configured `verify` command in merged nodes. Opt-in. */
+	verify?: boolean;
+	/** Repo names/paths to exclude from the tree entirely. */
+	ignore?: string[];
 }
 
 export type LinkStatus = 'linked' | 'repointed' | 'error';
@@ -113,264 +160,449 @@ export interface AncestryRepo extends Repo {
 	headDate: number | null;
 }
 
-/**
- * Normalize a git remote URL to a canonical, comparable form:
- *   git@github.com:wighawag/x.git   ->  https://github.com/wighawag/x
- *   https://github.com/Wighawag/X   ->  https://github.com/wighawag/x
- *   /abs/local/path                 ->  /abs/local/path (lowercased)
- */
-export function normalizeUrl(url: string): string {
-	let s = url.trim();
-	s = s.replace(/\.git$/, '');
-	s = s.replace(/^git@([^:]+):/, 'https://$1/');
-	s = s.replace(/^ssh:\/\/git@([^:/]+)\/?/, 'https://$1/');
-	s = s.replace(/^ssh:\/\//, 'https://');
-	s = s.replace(/^git:\/\//, 'https://');
-	s = s.replace(/^https:\/\/git@/, 'https://');
-	s = s.toLowerCase();
-	return s;
+// ──────────────────────────────────────────────────────────────────────────────
+// Merging one (repo, branch) node
+// ──────────────────────────────────────────────────────────────────────────────
+
+interface MergeOutcome {
+	status: Exclude<PropagateStatus, 'source' | 'skipped' | 'ignored'>;
+	files: string[];
+	message: string;
+	worktree: string | null;
+	verify: VerifyOutcome | null;
 }
 
-function samePath(a: string, b: string): boolean {
-	return path.resolve(a) === path.resolve(b);
+interface MergeSpec {
+	repoPath: string;
+	/** Branch merged INTO. */
+	branch: string;
+	/** Objects to fetch first (cross-repo edge), or null (in-repo edge). */
+	fetch: {url: string; branch: string} | null;
+	/** Ref merged FROM, once any fetch has happened. */
+	sourceRef: string;
+	/** Human description of where the change comes from. */
+	sourceLabel: string;
+	/** Verify command to run after a successful merge, or null. */
+	verify: string | null;
 }
 
-function repoFromPath(p: string, remoteName: string): Repo {
-	return {
-		name: path.basename(p),
-		path: p,
-		originUrl: isGitRepo(p) ? getRemoteUrl(p, 'origin') : null,
-		originalUrl: isGitRepo(p) ? getRemoteUrl(p, remoteName) : null,
-	};
+function outcome(
+	status: MergeOutcome['status'],
+	message: string,
+	files: string[] = [],
+	extra: Partial<MergeOutcome> = {},
+): MergeOutcome {
+	return {status, files, message, worktree: null, verify: null, ...extra};
 }
 
-/** Scan `baseDir`'s immediate subdirectories for git repos and read their remotes. */
-export function discoverRepos(
-	baseDir: string,
-	remoteName = DEFAULT_REMOTE,
-): Repo[] {
-	if (!fs.existsSync(baseDir)) return [];
-	const repos: Repo[] = [];
-	for (const entry of fs.readdirSync(baseDir, {withFileTypes: true})) {
-		if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-		const p = path.join(baseDir, entry.name);
-		if (!isGitRepo(p)) continue;
-		repos.push(repoFromPath(p, remoteName));
-	}
-	return repos;
+/** The worktree that has `branch` checked out, if any. */
+function checkedOutIn(repoPath: string, branch: string) {
+	return listWorktrees(repoPath).find((w) => w.branch === branch);
 }
 
-export function buildTree(repos: Repo[]): Tree {
-	const byOrigin = new Map<string, Repo>();
-	for (const r of repos) {
-		if (r.originUrl) byOrigin.set(normalizeUrl(r.originUrl), r);
-	}
-	return {repos, byOrigin};
-}
-
-/** Direct children of `parent` = repos whose parent remote matches `parent`'s `origin`. */
-export function childrenOf(parent: Repo, tree: Tree): Repo[] {
-	const key = parent.originUrl ? normalizeUrl(parent.originUrl) : null;
-	return tree.repos.filter(
-		(r) =>
-			r.originalUrl !== null &&
-			key !== null &&
-			normalizeUrl(r.originalUrl) === key &&
-			!samePath(r.path, parent.path),
+function dirtyOutcome(
+	branch: string,
+	dir: string,
+	main: boolean,
+): MergeOutcome {
+	return outcome(
+		'dirty',
+		main
+			? `working tree not clean — skipped (\`${branch}\` is checked out)`
+			: `worktree ${dir} not clean — skipped`,
 	);
 }
 
-type MergeOutcome = {
-	status: Exclude<PropagateStatus, 'source' | 'skipped'>;
-	files: string[];
-	message: string;
-};
+/**
+ * Dry-run without a worktree: `git merge-tree` computes the merge in memory, so
+ * `--dry-run`/`status` never touch a branch, an index or the working tree.
+ * Falls back to an in-worktree `--no-commit` merge on older git.
+ */
+function dryRunMerge(
+	spec: MergeSpec,
+	sourceRef: string,
+	repoPath: string,
+): MergeOutcome | null {
+	if (
+		git(['merge-base', '--is-ancestor', sourceRef, spec.branch], repoPath).ok
+	) {
+		return outcome('up-to-date', 'already up to date');
+	}
+	const m = git(
+		['merge-tree', '--write-tree', '--name-only', spec.branch, sourceRef],
+		repoPath,
+	);
+	const lines = m.stdout.split('\n');
+	if (m.ok) {
+		const treeSha = (lines[0] ?? '').trim();
+		if (!/^[0-9a-f]{40,}$/.test(treeSha)) return null; // unsupported git
+		const diff = git(['diff', '--name-only', spec.branch, treeSha], repoPath);
+		const files = diff.ok
+			? diff.stdout
+					.split('\n')
+					.map((l) => l.trim())
+					.filter(Boolean)
+			: [];
+		return outcome(
+			'merged',
+			`dry-run: would merge ${files.length} file(s) into ${spec.branch}`,
+			files,
+		);
+	}
+	if (m.status === 1) {
+		const files: string[] = [];
+		for (const line of lines.slice(1)) {
+			const f = line.trim();
+			if (f === '') break;
+			files.push(f);
+		}
+		return outcome(
+			'conflict',
+			`conflict in ${files.length} file(s) (dry-run, nothing changed)`,
+			files,
+		);
+	}
+	return null; // git too old, or a genuine failure: let the caller fall back
+}
 
-async function mergeOne(
-	child: Repo,
-	fetchUrl: string,
-	branch: string,
-	dryRun: boolean,
-	leaveConflicts: boolean,
+async function mergeNode(
+	spec: MergeSpec,
+	opts: {dryRun: boolean; leaveConflicts: boolean},
 ): Promise<MergeOutcome> {
-	if (!isClean(child.path)) {
-		return {
-			status: 'dirty',
-			files: [],
-			message: 'working tree not clean — skipped',
-		};
+	// A dirty tree blocks its branch in a dry-run too. `status` promising a merge
+	// that a real run then refuses is worse than useless, so this is checked first,
+	// before any fetch, exactly as it was before nodes existed.
+	const occupied = checkedOutIn(spec.repoPath, spec.branch);
+	if (occupied && !isClean(occupied.path)) {
+		return dirtyOutcome(spec.branch, occupied.path, occupied.main);
 	}
 
-	const fetch = git(['fetch', fetchUrl, branch], child.path);
-	if (!fetch.ok) {
-		return {
-			status: 'error',
-			files: [],
-			message: `fetch failed: ${(fetch.stderr || fetch.stdout).trim()}`,
-		};
+	// The fetch is the only write a dry-run performs (objects only), exactly as before.
+	let sourceRef = spec.sourceRef;
+	if (spec.fetch) {
+		const f = git(['fetch', spec.fetch.url, spec.fetch.branch], spec.repoPath);
+		if (!f.ok) {
+			return outcome('error', `fetch failed: ${(f.stderr || f.stdout).trim()}`);
+		}
+		// FETCH_HEAD is per-worktree, and the merge may happen in another one, so
+		// pin the fetched commit now: objects are shared, that name is not.
+		const fetched = refSha(spec.repoPath, 'FETCH_HEAD');
+		if (!fetched) {
+			return outcome('error', 'fetch produced no FETCH_HEAD');
+		}
+		sourceRef = fetched;
 	}
 
-	if (dryRun) {
+	if (opts.dryRun) {
+		const fast = dryRunMerge(spec, sourceRef, spec.repoPath);
+		if (fast) return fast;
+	}
+
+	const opened = openWorkspace(spec.repoPath, spec.branch);
+	if (!opened.ok) return outcome('error', opened.error);
+	const ws = opened.workspace;
+	let keep = false;
+
+	try {
+		// Re-checked against the resolved workspace: cheap, and the tree can have
+		// been dirtied between the check above and here.
+		if (!ws.temporary && !isClean(ws.dir)) {
+			return dirtyOutcome(spec.branch, ws.dir, ws.main);
+		}
+		const where = ws.temporary ? ` in a temporary worktree` : '';
+
+		if (opts.dryRun) {
+			const m = git(['merge', '--no-commit', '--no-ff', sourceRef], ws.dir);
+			if (m.ok) {
+				if (/already up to date/i.test(m.stdout)) {
+					mergeAbort(ws.dir);
+					return outcome('up-to-date', 'already up to date');
+				}
+				const files = stagedFiles(ws.dir);
+				mergeAbort(ws.dir);
+				return outcome(
+					'merged',
+					`dry-run: would merge ${files.length} file(s) into ${spec.branch}`,
+					files,
+				);
+			}
+			const conflicts = conflictedFiles(ws.dir);
+			mergeAbort(ws.dir);
+			return outcome(
+				'conflict',
+				`conflict in ${conflicts.length} file(s) (dry-run, aborted)`,
+				conflicts,
+			);
+		}
+
 		const m = git(
-			['merge', '--no-commit', '--no-ff', 'FETCH_HEAD'],
-			child.path,
+			[
+				'merge',
+				'--no-ff',
+				'-m',
+				`offshoot-fanout: merge ${spec.sourceLabel} into ${spec.branch}`,
+				sourceRef,
+			],
+			ws.dir,
 		);
 		if (m.ok) {
 			if (/already up to date/i.test(m.stdout)) {
-				mergeAbort(child.path);
-				return {status: 'up-to-date', files: [], message: 'already up to date'};
+				return outcome('up-to-date', 'already up to date');
 			}
-			const files = stagedFiles(child.path);
-			mergeAbort(child.path);
-			return {
-				status: 'merged',
+			const files = mergeCommitFiles(ws.dir);
+			const verify = spec.verify ? runVerify(spec.verify, ws.dir) : null;
+			// A failed verify is only actionable if there is somewhere to go and look,
+			// so keep the temporary worktree, exactly as a left conflict does.
+			keep = verify?.status === 'failed' && ws.temporary;
+			return outcome(
+				'merged',
+				`merged ${files.length} file(s) into ${spec.branch}${where}` +
+					(keep ? `, kept at ${ws.dir}` : ''),
 				files,
-				message: `dry-run: would merge ${files.length} file(s)`,
-			};
+				{verify, worktree: keep ? ws.dir : null},
+			);
 		}
-		const conflicts = conflictedFiles(child.path);
-		mergeAbort(child.path);
-		return {
-			status: 'conflict',
-			files: conflicts,
-			message: `conflict in ${conflicts.length} file(s) (dry-run, aborted)`,
-		};
-	}
 
-	const m = git(
-		[
-			'merge',
-			'--no-ff',
-			'-m',
-			`offshoot-fanout: merge ${branch} from parent`,
-			'FETCH_HEAD',
-		],
-		child.path,
-	);
-	if (m.ok) {
-		if (/already up to date/i.test(m.stdout)) {
-			return {status: 'up-to-date', files: [], message: 'already up to date'};
+		const conflicts = conflictedFiles(ws.dir);
+		if (conflicts.length > 0) {
+			if (opts.leaveConflicts) {
+				keep = ws.temporary;
+				return outcome(
+					'conflict',
+					keep
+						? `conflict in ${conflicts.length} file(s) — left in a temporary worktree: ${ws.dir}`
+						: `conflict in ${conflicts.length} file(s) — left for manual resolution`,
+					conflicts,
+					{worktree: keep ? ws.dir : null},
+				);
+			}
+			mergeAbort(ws.dir);
+			return outcome(
+				'conflict',
+				`conflict in ${conflicts.length} file(s) — aborted`,
+				conflicts,
+			);
 		}
-		const files = mergeCommitFiles(child.path);
-		return {status: 'merged', files, message: `merged ${files.length} file(s)`};
+		return outcome('error', `merge failed: ${(m.stderr || m.stdout).trim()}`);
+	} finally {
+		if (!keep) closeWorkspace(spec.repoPath, ws);
 	}
-	const conflicts = conflictedFiles(child.path);
-	if (conflicts.length > 0) {
-		if (leaveConflicts) {
-			return {
-				status: 'conflict',
-				files: conflicts,
-				message: `conflict in ${conflicts.length} file(s) — left for manual resolution`,
-			};
-		}
-		mergeAbort(child.path);
-		return {
-			status: 'conflict',
-			files: conflicts,
-			message: `conflict in ${conflicts.length} file(s) — aborted`,
-		};
-	}
+}
+
+/**
+ * Run a repo's configured verify command. Its LAST output line is the report
+ * line (checkers put the summary at the end); a command that fails silently is
+ * reported by its exit code instead.
+ */
+function runVerify(command: string, cwd: string): VerifyOutcome {
+	const r = runCommand(command, cwd);
+	const lastLine = r.output
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.pop();
 	return {
-		status: 'error',
-		files: [],
-		message: `merge failed: ${(m.stderr || m.stdout).trim()}`,
+		status: r.ok ? 'passed' : 'failed',
+		command,
+		message: r.ok
+			? 'verify passed'
+			: `verify FAILED (exit ${r.status ?? '?'})${lastLine ? `: ${lastLine}` : ''}`,
 	};
 }
 
 const SUCCESS: PropagateStatus[] = ['source', 'merged', 'up-to-date'];
 
+function emptyResult(
+	repo: Repo,
+	branch: string,
+	edge: EdgeKind,
+	parent: NodeRef | null,
+): PropagateResult {
+	return {
+		repo,
+		branch,
+		edge,
+		parent,
+		status: 'up-to-date',
+		files: [],
+		message: '',
+		worktree: null,
+		verify: null,
+		children: [],
+		notes: [],
+	};
+}
+
 /**
- * Propagate changes from `sourcePath` down through every descendant discovered
- * via the parent remote (default `stem`). Descendants are processed in BFS
- * order, each merging its parent's current LOCAL head, so an intermediate
- * merge cascades to the leaves in one pass. A failed node's descendants are
- * marked `skipped` (still visited/rendered) rather than merged against stale state.
+ * Propagate changes from `sourcePath` down through every descendant node.
+ *
+ * A node is a `(repo, branch)` pair. Edges are cross-repo (the `stem` remote,
+ * parent's primary branch -> child's root branches) and in-repo (a branch whose
+ * config declares another branch of the same repo as its stem). BFS over nodes
+ * gives the correct order for free, and each child merges its parent's current
+ * LOCAL ref, so an intermediate merge cascades to the leaves in one pass.
+ *
+ * A failed node's descendants are marked `skipped` (still visited/rendered)
+ * rather than merged against stale state.
  */
 export async function propagate(
 	opts: PropagateOptions,
 ): Promise<PropagateResult> {
-	const branch = opts.branch ?? 'main';
 	const remoteName = opts.remoteName ?? DEFAULT_REMOTE;
 	const sourcePath = path.resolve(opts.sourcePath);
 	const baseDir = path.resolve(opts.baseDir ?? path.dirname(sourcePath));
+	const notes: string[] = [];
 
-	let repos: Repo[];
+	const worktreeNote = (name: string, mainName: string) =>
+		`${name} is a linked worktree of ${mainName} (same repository) — not a node`;
+
+	let repos: Repo[] = [];
 	if (opts.repos && opts.repos.length > 0) {
-		repos = opts.repos.map((p) => repoFromPath(path.resolve(p), remoteName));
+		for (const p of opts.repos) {
+			const abs = path.resolve(p);
+			const wt = asLinkedWorktree(abs);
+			if (wt) {
+				notes.push(worktreeNote(wt.name, wt.mainName));
+				continue;
+			}
+			repos.push(repoFromPath(abs, remoteName));
+		}
 	} else {
 		repos = discoverRepos(baseDir, remoteName);
 	}
+
+	const planner = createPlanner({
+		configBranch: opts.configBranch ?? DEFAULT_CONFIG_BRANCH,
+		useConfig: opts.useConfig,
+		branchOverride: opts.branch,
+		ignore: opts.ignore,
+	});
+
 	if (!repos.some((r) => samePath(r.path, sourcePath))) {
+		const wt = asLinkedWorktree(sourcePath);
+		if (wt) {
+			const result = emptyResult(
+				repoFromPath(sourcePath, remoteName),
+				'(unknown)',
+				'source',
+				null,
+			);
+			result.status = 'error';
+			result.message = `${wt.name} is a linked worktree of ${wt.mainName}; run from ${wt.mainPath} instead`;
+			result.notes = notes;
+			return result;
+		}
 		repos.push(repoFromPath(sourcePath, remoteName));
+	}
+
+	// Mention each repo's linked worktrees once, however the repo set was built.
+	for (const repo of repos) {
+		for (const wt of listWorktrees(repo.path)) {
+			if (wt.main) continue;
+			const note = worktreeNote(path.basename(wt.path), repo.name);
+			if (!notes.includes(note)) notes.push(note);
+		}
 	}
 
 	const tree = buildTree(repos);
 	const source = repos.find((r) => samePath(r.path, sourcePath))!;
+	const sourcePlan = planner(source);
 
-	const root: PropagateResult = {
-		repo: source,
-		parent: null,
-		status: 'source',
-		files: [],
-		message: 'source',
-		children: [],
-	};
+	const root = emptyResult(source, sourcePlan.primary, 'source', null);
+	root.status = 'source';
+	root.message = sourcePlan.note ? `source (${sourcePlan.note})` : 'source';
+	root.notes = notes;
+	if (sourcePlan.error) {
+		root.status = 'error';
+		root.message = sourcePlan.error;
+	}
 
-	type Frame = {node: Repo; result: PropagateResult; ancestralFailure: boolean};
+	type Frame = {node: NodeRef; result: PropagateResult; failed: boolean};
 	const queue: Frame[] = [
-		{node: source, result: root, ancestralFailure: false},
+		{
+			node: {repo: source, branch: sourcePlan.primary},
+			result: root,
+			failed: root.status === 'error',
+		},
 	];
-	const visited = new Set<string>([source.path]);
+	const visited = new Set<string>([nodeKey(source, sourcePlan.primary)]);
 
 	while (queue.length > 0) {
-		const {node, result, ancestralFailure} = queue.shift()!;
-		for (const child of childrenOf(node, tree)) {
-			if (visited.has(child.path)) continue;
-			visited.add(child.path);
+		const {node, result, failed} = queue.shift()!;
+		const children: ChildNode[] = childNodes(node, tree, planner);
 
-			const childResult: PropagateResult = {
-				repo: child,
-				parent: node,
-				status: 'up-to-date',
-				files: [],
-				message: '',
-				children: [],
-			};
+		for (const child of children) {
+			const key = nodeKey(child.node.repo, child.node.branch);
+			if (visited.has(key)) continue;
+			visited.add(key);
+
+			const childResult = emptyResult(
+				child.node.repo,
+				child.node.branch,
+				child.edge,
+				node,
+			);
 			result.children.push(childResult);
 
-			if (ancestralFailure) {
+			const childPlan = planner(child.node.repo);
+
+			if (failed) {
 				childResult.status = 'skipped';
 				childResult.message = `parent not updated (${result.status})`;
-				queue.push({node: child, result: childResult, ancestralFailure: true});
+				queue.push({node: child.node, result: childResult, failed: true});
 				continue;
 			}
 
-			const parentLocal = child.originalUrl
-				? (tree.byOrigin.get(normalizeUrl(child.originalUrl)) ?? null)
-				: null;
-			const fetchUrl = parentLocal ? parentLocal.path : child.originalUrl;
-			if (!fetchUrl) {
+			if (childPlan.ignored !== null) {
+				childResult.status = 'ignored';
+				childResult.message = `ignored (\`${childPlan.ignored}\`)`;
+				queue.push({node: child.node, result: childResult, failed: true});
+				continue;
+			}
+
+			if (childPlan.error) {
 				childResult.status = 'error';
-				childResult.message = `no \`${remoteName}\` remote and no local parent found`;
-				queue.push({node: child, result: childResult, ancestralFailure: true});
+				childResult.message = childPlan.error;
+				queue.push({node: child.node, result: childResult, failed: true});
 				continue;
 			}
 
-			const outcome = await mergeOne(
-				child,
-				fetchUrl,
-				branch,
-				!!opts.dryRun,
-				!!opts.leaveConflicts,
-			);
-			childResult.status = outcome.status;
-			childResult.files = outcome.files;
-			childResult.message = outcome.message;
+			const spec: MergeSpec =
+				child.edge === 'in-repo'
+					? {
+							repoPath: child.node.repo.path,
+							branch: child.node.branch,
+							fetch: null,
+							sourceRef: node.branch,
+							sourceLabel: node.branch,
+							verify: opts.verify ? childPlan.verify : null,
+						}
+					: {
+							repoPath: child.node.repo.path,
+							branch: child.node.branch,
+							fetch: {url: node.repo.path, branch: node.branch},
+							sourceRef: 'FETCH_HEAD',
+							sourceLabel: `${node.repo.name}@${node.branch}`,
+							verify: opts.verify ? childPlan.verify : null,
+						};
+
+			const merged = await mergeNode(spec, {
+				dryRun: !!opts.dryRun,
+				leaveConflicts: !!opts.leaveConflicts,
+			});
+			childResult.status = merged.status;
+			childResult.files = merged.files;
+			childResult.message = merged.message;
+			childResult.worktree = merged.worktree;
+			childResult.verify = merged.verify;
+			if (childPlan.note) {
+				childResult.message += ` (${childPlan.note})`;
+			}
 
 			queue.push({
-				node: child,
+				node: child.node,
 				result: childResult,
-				ancestralFailure: !SUCCESS.includes(outcome.status),
+				failed: !SUCCESS.includes(merged.status),
 			});
 		}
 	}
@@ -504,6 +736,7 @@ export function ancestryRepo(
 export function discoverAncestry(
 	baseDir: string,
 	remoteName = DEFAULT_REMOTE,
+	ignore: string[] = [],
 ): FamilyTree[] {
 	if (!fs.existsSync(baseDir)) return [];
 	const repos: AncestryRepo[] = [];
@@ -511,6 +744,10 @@ export function discoverAncestry(
 		if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
 		const p = path.join(baseDir, entry.name);
 		if (!isGitRepo(p)) continue;
+		// A linked worktree is the same repository as its parent: it shares every
+		// commit, so it would look like a perfect "family member" of itself.
+		if (isLinkedWorktree(p)) continue;
+		if (matchIgnore({name: entry.name, path: p}, ignore)) continue;
 		repos.push(ancestryRepo(p, remoteName));
 	}
 
@@ -630,6 +867,13 @@ export interface Registry {
 	generatedAt: string;
 	root: string;
 	repos: RegistryRepo[];
+	/**
+	 * Maintainer-local exclusions: repos that exist on disk but must stay out of
+	 * the tree (a deprecated template whose folder has not been deleted yet).
+	 * This is local state, so it lives here rather than in a repo's config branch.
+	 * `discover --save` preserves it.
+	 */
+	ignore?: string[];
 }
 
 /** ~/.offshoot-stems/ */
@@ -652,6 +896,7 @@ export function saveRegistry(
 	repos: Repo[],
 	remoteName: string,
 	rootFilter?: string,
+	extraIgnore: string[] = [],
 ): string[] {
 	fs.mkdirSync(registryDir(), {recursive: true});
 	const generatedAt = new Date().toISOString();
@@ -693,14 +938,19 @@ export function saveRegistry(
 				parent: parent ? parent.name : null,
 			};
 		});
+		const file = registryPath(root.name);
+		// Never clobber an existing `ignore` array: it is hand-maintained state that
+		// a re-scan knows nothing about.
+		const previous = loadRegistry(file);
+		const ignore = [...new Set([...(previous?.ignore ?? []), ...extraIgnore])];
 		const reg: Registry = {
 			version: 1,
 			remoteName,
 			generatedAt,
 			root: root.name,
 			repos: regRepos,
+			...(ignore.length > 0 ? {ignore} : {}),
 		};
-		const file = registryPath(root.name);
 		fs.writeFileSync(file, JSON.stringify(reg, null, 2) + '\n', 'utf8');
 		written.push(file);
 	}
@@ -710,7 +960,7 @@ export function saveRegistry(
 /** Load a registry file into a plain `Repo[]` (stemUrl -> originalUrl). */
 export function loadRegistry(
 	file: string,
-): {root: string; remoteName: string; repos: Repo[]} | null {
+): {root: string; remoteName: string; repos: Repo[]; ignore: string[]} | null {
 	if (!fs.existsSync(file)) return null;
 	let reg: Registry;
 	try {
@@ -724,7 +974,12 @@ export function loadRegistry(
 		originUrl: r.originUrl,
 		originalUrl: r.stemUrl,
 	}));
-	return {root: reg.root, remoteName: reg.remoteName, repos};
+	return {
+		root: reg.root,
+		remoteName: reg.remoteName,
+		repos,
+		ignore: Array.isArray(reg.ignore) ? reg.ignore : [],
+	};
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -733,26 +988,101 @@ export function loadRegistry(
 
 export interface DriftResult {
 	repo: Repo;
+	/** The branch that is ahead. Drift is per node, not per repo. */
+	branch: string;
+	/** What it is ahead OF, e.g. `template-svelte@main` or `main` (in-repo). */
+	stem: string;
 	ahead: {sha: string; subject: string}[];
 	error?: string;
 }
 
-/** For each repo with a `stem` parent, list commits it has that the parent lacks. */
+export interface DriftOptions {
+	configBranch?: string;
+	useConfig?: boolean;
+	ignore?: string[];
+}
+
+/**
+ * For every node with a stem (a child repo's root branch for a cross-repo
+ * edge, or a branch whose stem is a sibling branch) list the commits it has
+ * that its stem lacks. Comparing per node is what makes drift able to notice
+ * that a change landed on the wrong branch.
+ */
 export function driftTree(
 	repos: Repo[],
-	remoteName: string,
-	branch: string,
+	/** Kept for call-site symmetry: each repo already carries its resolved stem URL. */
+	_remoteName: string,
+	branch?: string,
+	opts: DriftOptions = {},
 ): DriftResult[] {
 	const tree = buildTree(repos);
+	const planner = createPlanner({
+		configBranch: opts.configBranch ?? DEFAULT_CONFIG_BRANCH,
+		useConfig: opts.useConfig,
+		branchOverride: branch,
+		ignore: opts.ignore,
+	});
 	const results: DriftResult[] = [];
+
 	for (const repo of repos) {
-		if (!repo.originalUrl) continue; // root or unwired — nothing to compare
+		const plan = planner(repo);
+		if (plan.ignored !== null) continue;
+		if (plan.error) {
+			results.push({
+				repo,
+				branch: plan.primary,
+				stem: '?',
+				ahead: [],
+				error: plan.error,
+			});
+			continue;
+		}
+
+		// in-repo edges: a branch whose stem is another branch of this repo
+		for (const node of plan.branches) {
+			if (node.stem === null) continue;
+			const r = commitsBetween(repo.path, node.stem, node.name);
+			results.push({
+				repo,
+				branch: node.name,
+				stem: node.stem,
+				ahead: r.ok ? r.commits : [],
+				...(r.ok ? {} : {error: r.error}),
+			});
+		}
+
+		// cross-repo edge: this repo's root branches vs the parent's primary branch
+		if (!repo.originalUrl) continue; // root or unwired: nothing to compare
 		const parentLocal =
 			tree.byOrigin.get(normalizeUrl(repo.originalUrl)) ?? null;
 		const fetchUrl = parentLocal ? parentLocal.path : repo.originalUrl;
-		const r = commitsAhead(repo.path, fetchUrl, branch);
-		if (r.ok) results.push({repo, ahead: r.commits});
-		else results.push({repo, ahead: [], error: r.error});
+		const parentBranch = parentLocal
+			? planner(parentLocal).primary
+			: (branch ?? 'main');
+		const stemLabel = `${parentLocal ? parentLocal.name : repo.originalUrl}@${parentBranch}`;
+
+		const fetched = git(['fetch', fetchUrl, parentBranch], repo.path);
+		for (const node of plan.branches) {
+			if (node.stem !== null) continue;
+			if (!fetched.ok) {
+				results.push({
+					repo,
+					branch: node.name,
+					stem: stemLabel,
+					ahead: [],
+					error: `fetch failed: ${(fetched.stderr || fetched.stdout).trim()}`,
+				});
+				continue;
+			}
+			const r = commitsBetween(repo.path, 'FETCH_HEAD', node.name);
+			results.push({
+				repo,
+				branch: node.name,
+				stem: stemLabel,
+				ahead: r.ok ? r.commits : [],
+				...(r.ok ? {} : {error: r.error}),
+			});
+		}
 	}
 	return results;
 }
@@ -764,10 +1094,14 @@ export function driftTree(
 export interface BackportResult {
 	ancestorPath: string;
 	ancestorName: string;
+	/** The ancestor branch the commit was cherry-picked onto. */
+	ancestorBranch: string;
 	status: 'backported' | 'conflict' | 'dry-run' | 'error';
 	commit: string;
 	subject: string | null;
 	message: string;
+	/** Temporary worktree left in place holding an unresolved conflict. */
+	worktree: string | null;
 }
 
 export interface BackportOptions {
@@ -783,12 +1117,19 @@ export interface BackportOptions {
 	repos?: Repo[];
 	dryRun?: boolean;
 	leaveConflicts?: boolean;
+	configBranch?: string;
+	useConfig?: boolean;
 }
 
 export function backport(opts: BackportOptions): BackportResult {
-	const branch = opts.branch ?? 'main';
 	const remoteName = opts.remoteName ?? DEFAULT_REMOTE;
 	const fromRepo = repoFromPath(opts.fromPath, remoteName);
+	const planner = createPlanner({
+		configBranch: opts.configBranch ?? DEFAULT_CONFIG_BRANCH,
+		useConfig: opts.useConfig,
+		branchOverride: opts.branch,
+	});
+	const branch = opts.branch ?? planner(fromRepo).primary;
 
 	// Resolve the ancestor: explicit --to, else the from-repo's immediate stem parent.
 	let ancestorPath = opts.toPath;
@@ -803,25 +1144,34 @@ export function backport(opts: BackportOptions): BackportResult {
 			return {
 				ancestorPath: '',
 				ancestorName: '',
+				ancestorBranch: '?',
 				status: 'error',
 				commit: opts.commit,
 				subject: null,
 				message: `no --to given and \`${remoteName}\` parent not resolvable for ${fromRepo.name}`,
+				worktree: null,
 			};
 		}
 		ancestorPath = parentLocal.path;
 	}
 
 	const ancestor = repoFromPath(ancestorPath, remoteName);
+	const ancestorPlan = planner(ancestor);
+	const ancestorBranch = ancestorPlan.primary;
 
 	// Bring the descendant's commit into the ancestor's object db, then describe it.
 	const fetch = git(['fetch', opts.fromPath, branch], ancestorPath);
+	const base = {
+		ancestorPath,
+		ancestorName: ancestor.name,
+		ancestorBranch,
+		commit: opts.commit,
+		worktree: null as string | null,
+	};
 	if (!fetch.ok) {
 		return {
-			ancestorPath,
-			ancestorName: ancestor.name,
+			...base,
 			status: 'error',
-			commit: opts.commit,
 			subject: null,
 			message: `fetch failed: ${(fetch.stderr || fetch.stdout).trim()}`,
 		};
@@ -830,67 +1180,71 @@ export function backport(opts: BackportOptions): BackportResult {
 
 	if (opts.dryRun) {
 		return {
-			ancestorPath,
-			ancestorName: ancestor.name,
+			...base,
 			status: 'dry-run',
-			commit: opts.commit,
 			subject: subj,
-			message: `would cherry-pick ${opts.commit} onto ${ancestor.name}`,
+			message: `would cherry-pick ${opts.commit} onto ${ancestor.name}@${ancestorBranch}`,
 		};
 	}
 
-	if (!isClean(ancestorPath)) {
-		return {
-			ancestorPath,
-			ancestorName: ancestor.name,
-			status: 'error',
-			commit: opts.commit,
-			subject: subj,
-			message: `${ancestor.name} working tree not clean`,
-		};
+	// Cherry-pick onto the ancestor's node branch, which is not necessarily the
+	// branch it has checked out (same rule as a merge: never `git checkout`).
+	const opened = openWorkspace(ancestorPath, ancestorBranch);
+	if (!opened.ok) {
+		return {...base, status: 'error', subject: subj, message: opened.error};
 	}
-
-	const cp = cherryPick(ancestorPath, opts.commit);
-	if (cp.ok) {
-		return {
-			ancestorPath,
-			ancestorName: ancestor.name,
-			status: 'backported',
-			commit: opts.commit,
-			subject: subj,
-			message: `cherry-picked ${opts.commit} onto ${ancestor.name}`,
-		};
-	}
-	const conflicts = conflictedFiles(ancestorPath);
-	if (conflicts.length > 0) {
-		if (opts.leaveConflicts) {
+	const ws = opened.workspace;
+	let keep = false;
+	try {
+		if (!ws.temporary && !isClean(ws.dir)) {
 			return {
-				ancestorPath,
-				ancestorName: ancestor.name,
-				status: 'conflict',
-				commit: opts.commit,
+				...base,
+				status: 'error',
 				subject: subj,
-				message: `conflict in ${conflicts.length} file(s) — left for manual resolution`,
+				message: `${ancestor.name} working tree not clean`,
 			};
 		}
-		cherryPickAbort(ancestorPath);
+
+		const cp = cherryPick(ws.dir, opts.commit);
+		if (cp.ok) {
+			return {
+				...base,
+				status: 'backported',
+				subject: subj,
+				message: `cherry-picked ${opts.commit} onto ${ancestor.name}@${ancestorBranch}`,
+			};
+		}
+		const conflicts = conflictedFiles(ws.dir);
+		if (conflicts.length > 0) {
+			if (opts.leaveConflicts) {
+				keep = ws.temporary;
+				return {
+					...base,
+					status: 'conflict',
+					subject: subj,
+					worktree: keep ? ws.dir : null,
+					message: keep
+						? `conflict in ${conflicts.length} file(s) — left in a temporary worktree: ${ws.dir}`
+						: `conflict in ${conflicts.length} file(s) — left for manual resolution`,
+				};
+			}
+			cherryPickAbort(ws.dir);
+			return {
+				...base,
+				status: 'conflict',
+				subject: subj,
+				message: `conflict in ${conflicts.length} file(s) — aborted`,
+			};
+		}
 		return {
-			ancestorPath,
-			ancestorName: ancestor.name,
-			status: 'conflict',
-			commit: opts.commit,
+			...base,
+			status: 'error',
 			subject: subj,
-			message: `conflict in ${conflicts.length} file(s) — aborted`,
+			message: `cherry-pick failed: ${(cp.stderr || cp.stdout).trim()}`,
 		};
+	} finally {
+		if (!keep) closeWorkspace(ancestorPath, ws);
 	}
-	return {
-		ancestorPath,
-		ancestorName: ancestor.name,
-		status: 'error',
-		commit: opts.commit,
-		subject: subj,
-		message: `cherry-pick failed: ${(cp.stderr || cp.stdout).trim()}`,
-	};
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -899,6 +1253,8 @@ export function backport(opts: BackportOptions): BackportResult {
 
 export interface RootStatus {
 	root: Repo;
+	/** Total nodes ((repo, branch) pairs) in this wired subtree. */
+	nodeCount: number;
 	/** Total repos in this wired subtree (root + descendants). */
 	repoCount: number;
 	/** Downstream counts from a `fanout --dry-run` of the root. */
@@ -909,13 +1265,24 @@ export interface RootStatus {
 		error: number;
 		skipped: number;
 		dirty: number;
+		ignored: number;
 	};
-	/** Descendants that conflicted on the dry-run, with their conflicting files. */
-	conflicts: {repo: Repo; files: string[]}[];
-	/** Names of descendants blocked because an ancestor conflicted. */
+	/** Nodes that conflicted on the dry-run, with their conflicting files. */
+	conflicts: {repo: Repo; branch: string; files: string[]}[];
+	/** Labels (`repo@branch`) of nodes blocked because an ancestor failed. */
 	blocked: string[];
-	/** Upstream drift: repos with commits ahead of their `stem` parent (candidate backports). */
+	/** Labels of nodes deliberately left out of the tree. */
+	ignored: string[];
+	/** Upstream drift: nodes with commits ahead of their stem (candidate backports). */
 	drift: DriftResult[];
+	/** Things excluded from the node set entirely (linked worktrees). */
+	notes: string[];
+}
+
+export interface StatusOptions {
+	configBranch?: string;
+	useConfig?: boolean;
+	ignore?: string[];
 }
 
 /**
@@ -926,11 +1293,13 @@ export interface RootStatus {
 export async function statusTree(
 	repos: Repo[],
 	remoteName = DEFAULT_REMOTE,
-	branch = 'main',
+	branch?: string,
+	opts: StatusOptions = {},
 ): Promise<RootStatus[]> {
 	const tree = buildTree(repos);
 	// A wired root has no `stem` parent inside the set and at least one descendant.
 	const roots = repos.filter((r) => {
+		if (matchIgnore(r, opts.ignore)) return false;
 		const parent = r.originalUrl
 			? tree.byOrigin.get(normalizeUrl(r.originalUrl))
 			: undefined;
@@ -945,6 +1314,9 @@ export async function statusTree(
 			remoteName,
 			branch,
 			dryRun: true,
+			configBranch: opts.configBranch,
+			useConfig: opts.useConfig,
+			ignore: opts.ignore,
 		});
 		const counts = {
 			merged: 0,
@@ -953,35 +1325,52 @@ export async function statusTree(
 			error: 0,
 			skipped: 0,
 			dirty: 0,
+			ignored: 0,
 		};
-		const conflicts: {repo: Repo; files: string[]}[] = [];
+		const conflicts: {repo: Repo; branch: string; files: string[]}[] = [];
 		const blocked: string[] = [];
+		const ignored: string[] = [];
 		const subtreeRepos: Repo[] = [];
+		const seenRepos = new Set<string>();
+		let nodeCount = 0;
 		const walk = (n: PropagateResult) => {
-			subtreeRepos.push(n.repo);
+			nodeCount++;
+			if (!seenRepos.has(path.resolve(n.repo.path))) {
+				seenRepos.add(path.resolve(n.repo.path));
+				subtreeRepos.push(n.repo);
+			}
 			if (n.status === 'merged') counts.merged++;
 			else if (n.status === 'up-to-date') counts.upToDate++;
 			else if (n.status === 'conflict') {
 				counts.conflict++;
-				conflicts.push({repo: n.repo, files: n.files});
+				conflicts.push({repo: n.repo, branch: n.branch, files: n.files});
 			} else if (n.status === 'error') counts.error++;
 			else if (n.status === 'skipped') {
 				counts.skipped++;
-				blocked.push(n.repo.name);
+				blocked.push(nodeLabel(n.repo, n.branch));
 			} else if (n.status === 'dirty') counts.dirty++;
+			else if (n.status === 'ignored') {
+				counts.ignored++;
+				ignored.push(nodeLabel(n.repo, n.branch));
+			}
 			n.children.forEach(walk);
 		};
 		walk(downstream);
-		const drift = driftTree(subtreeRepos, remoteName, branch).filter(
-			(d) => d.ahead.length > 0 || d.error,
-		);
+		const drift = driftTree(subtreeRepos, remoteName, branch, {
+			configBranch: opts.configBranch,
+			useConfig: opts.useConfig,
+			ignore: opts.ignore,
+		}).filter((d) => d.ahead.length > 0 || d.error);
 		results.push({
 			root,
 			counts,
 			conflicts,
 			blocked,
+			ignored,
 			drift,
+			nodeCount,
 			repoCount: subtreeRepos.length,
+			notes: downstream.notes,
 		});
 	}
 	return results;

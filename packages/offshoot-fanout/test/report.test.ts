@@ -7,14 +7,20 @@ function r(
 	files: string[] = [],
 	message = '',
 	children: PropagateResult[] = [],
+	branch = 'main',
 ): PropagateResult {
 	return {
 		repo: {name, path: `/${name}`, originUrl: null, originalUrl: null},
+		branch,
+		edge: status === 'source' ? 'source' : 'cross-repo',
 		parent: null,
 		status,
 		files,
 		message,
+		worktree: null,
+		verify: null,
 		children,
+		notes: [],
 	};
 }
 
@@ -40,27 +46,28 @@ describe('formatReport', () => {
 		const out = formatReport(tree, {color: false});
 		const lines = out.split('\n');
 
-		expect(lines[0]).toContain('◆ a source');
+		// every line names the DESTINATION branch, not just the repo
+		expect(lines[0]).toContain('◆ a@main source');
 		expect(lines[1]).toContain('├─');
-		expect(lines[1]).toContain('✓ b merged');
+		expect(lines[1]).toContain('✓ b@main merged');
 		expect(lines[1]).toContain('merged 2 file(s)');
 		expect(lines[2]).toContain('web/src/app.html');
 		expect(lines[3]).toContain('web/package.json');
 		// d sits under b (b is not the last child of a), merged-then-up-to-date
-		const dLine = lines.find((l) => l.includes('• d up to date'));
+		const dLine = lines.find((l) => l.includes('• d@main up to date'));
 		expect(dLine).toBeDefined();
 		expect(dLine).toContain('already up to date');
 		// c is the last child of a
-		const cLine = lines.find((l) => l.includes('✗ c CONFLICT'));
+		const cLine = lines.find((l) => l.includes('✗ c@main CONFLICT'));
 		expect(cLine).toBeDefined();
 		expect(cLine).toContain('conflict in 1 file(s) — aborted');
 		expect(cLine).toContain('└─');
 		// e is skipped under the conflicted c
-		const eLine = lines.find((l) => l.includes('⊘ e skipped'));
+		const eLine = lines.find((l) => l.includes('⊘ e@main skipped'));
 		expect(eLine).toBeDefined();
 		expect(eLine).toContain('parent not updated (conflict)');
 		// the conflict file is listed under c
-		const cIndex = lines.findIndex((l) => l.includes('✗ c CONFLICT'));
+		const cIndex = lines.findIndex((l) => l.includes('✗ c@main CONFLICT'));
 		expect(
 			lines.slice(cIndex + 1).some((l) => l.includes('web/package.json')),
 		).toBe(true);
@@ -80,6 +87,8 @@ describe('summarize', () => {
 			errors: 0,
 			skipped: 1, // e
 			dirty: 0,
+			ignored: 0,
+			verifyFailed: 0,
 		});
 	});
 });
