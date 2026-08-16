@@ -1,6 +1,6 @@
 {
 	"name": "offshoot-fanout",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Propagate a template change down to all its descendant repos and branches via `stem` git remotes, with dry-run and conflict reporting. The maintainer-side companion to offshoot.",
 	"license": "MIT",
 	"author": "Ronan Sandford",
