@@ -13,13 +13,14 @@ function r(
 		repo: {name, path: `/${name}`, originUrl: null, originalUrl: null},
 		branch,
 		edge: status === 'source' ? 'source' : 'cross-repo',
-		parent: null,
+		parents: [],
 		status,
 		files,
 		message,
 		worktree: null,
 		verify: null,
 		children,
+		reference: null,
 		notes: [],
 	};
 }

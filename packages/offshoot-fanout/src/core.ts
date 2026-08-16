@@ -7,7 +7,7 @@ import {
 	cherryPick,
 	cherryPickAbort,
 	commitSubject,
-	commitsBetween,
+	commitsNotIn,
 	conflictedFiles,
 	getRemoteUrl,
 	git,
@@ -40,7 +40,6 @@ import {
 	createPlanner,
 	nodeKey,
 	nodeLabel,
-	type ChildNode,
 	type EdgeKind,
 	type NodeRef,
 } from './nodes.js';
@@ -82,7 +81,11 @@ export interface PropagateResult {
 	branch: string;
 	/** How this node is fed: from the parent repo, from a sibling branch, or the source. */
 	edge: EdgeKind;
-	parent: NodeRef | null;
+	/**
+	 * Every node this one merges from. More than one for an integration branch,
+	 * which is why the result is a DAG rendered as a tree rather than a tree.
+	 */
+	parents: NodeRef[];
 	status: PropagateStatus;
 	/** Files changed by the merge, or conflicting files. */
 	files: string[];
@@ -92,6 +95,12 @@ export interface PropagateResult {
 	/** Result of the opt-in `verify` command, when it ran. */
 	verify: VerifyOutcome | null;
 	children: PropagateResult[];
+	/**
+	 * Set on the cross-link stub printed under a multi-stem node's other parents:
+	 * the label of the node this one is rendered in full under. Stubs carry no
+	 * status of their own and must not be counted.
+	 */
+	reference: string | null;
 	/** Root only: what was excluded from the node set and why. */
 	notes: string[];
 }
@@ -172,16 +181,22 @@ interface MergeOutcome {
 	verify: VerifyOutcome | null;
 }
 
+/** One thing merged INTO the node's branch. A node has one per stem. */
+interface MergeSource {
+	/** Objects to fetch first (cross-repo edge), or null (in-repo edge). */
+	fetch: {url: string; branch: string} | null;
+	/** Ref merged FROM, before any fetch pins it to a sha. */
+	ref: string;
+	/** Human description of where the change comes from. */
+	label: string;
+}
+
 interface MergeSpec {
 	repoPath: string;
 	/** Branch merged INTO. */
 	branch: string;
-	/** Objects to fetch first (cross-repo edge), or null (in-repo edge). */
-	fetch: {url: string; branch: string} | null;
-	/** Ref merged FROM, once any fetch has happened. */
-	sourceRef: string;
-	/** Human description of where the change comes from. */
-	sourceLabel: string;
+	/** Stems, merged in declaration order. Exactly one for a cross-repo edge. */
+	sources: MergeSource[];
 	/** Verify command to run after a successful merge, or null. */
 	verify: string | null;
 }
@@ -213,41 +228,41 @@ function dirtyOutcome(
 	);
 }
 
+/** `a`, `a and b`, `a, b and c`. */
+function listLabels(labels: string[]): string {
+	if (labels.length <= 1) return labels[0] ?? '';
+	return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
 /**
- * Dry-run without a worktree: `git merge-tree` computes the merge in memory, so
- * `--dry-run`/`status` never touch a branch, an index or the working tree.
- * Falls back to an in-worktree `--no-commit` merge on older git.
+ * Dry-run of ONE stem without a worktree: `git merge-tree` computes the merge in
+ * memory, so `--dry-run`/`status` never touch a branch, an index or the working
+ * tree. Returns null when git is too old, so the caller can fall back.
  */
-function dryRunMerge(
-	spec: MergeSpec,
+function dryRunOne(
+	branch: string,
 	sourceRef: string,
 	repoPath: string,
 ): MergeOutcome | null {
-	if (
-		git(['merge-base', '--is-ancestor', sourceRef, spec.branch], repoPath).ok
-	) {
+	if (git(['merge-base', '--is-ancestor', sourceRef, branch], repoPath).ok) {
 		return outcome('up-to-date', 'already up to date');
 	}
 	const m = git(
-		['merge-tree', '--write-tree', '--name-only', spec.branch, sourceRef],
+		['merge-tree', '--write-tree', '--name-only', branch, sourceRef],
 		repoPath,
 	);
 	const lines = m.stdout.split('\n');
 	if (m.ok) {
 		const treeSha = (lines[0] ?? '').trim();
 		if (!/^[0-9a-f]{40,}$/.test(treeSha)) return null; // unsupported git
-		const diff = git(['diff', '--name-only', spec.branch, treeSha], repoPath);
+		const diff = git(['diff', '--name-only', branch, treeSha], repoPath);
 		const files = diff.ok
 			? diff.stdout
 					.split('\n')
 					.map((l) => l.trim())
 					.filter(Boolean)
 			: [];
-		return outcome(
-			'merged',
-			`dry-run: would merge ${files.length} file(s) into ${spec.branch}`,
-			files,
-		);
+		return outcome('merged', `would merge ${files.length} file(s)`, files);
 	}
 	if (m.status === 1) {
 		const files: string[] = [];
@@ -256,13 +271,67 @@ function dryRunMerge(
 			if (f === '') break;
 			files.push(f);
 		}
-		return outcome(
-			'conflict',
-			`conflict in ${files.length} file(s) (dry-run, nothing changed)`,
-			files,
-		);
+		return outcome('conflict', `conflict in ${files.length} file(s)`, files);
 	}
 	return null; // git too old, or a genuine failure: let the caller fall back
+}
+
+/**
+ * Dry-run of every stem.
+ *
+ * Each stem is predicted against the branch as it stands now, because
+ * `merge-tree` takes commits and there is no commit for "the branch after stem
+ * 1 merged". For a single-stem node that is exact; for an integration node the
+ * stems after the first are an approximation, and the message says so rather
+ * than quietly overstating what a real run would do.
+ */
+function dryRunMerge(
+	spec: MergeSpec,
+	refs: string[],
+	repoPath: string,
+): MergeOutcome | null {
+	const files = new Set<string>();
+	const conflicted: string[] = [];
+	const conflictFiles = new Set<string>();
+	const merging: string[] = [];
+
+	for (const [i, ref] of refs.entries()) {
+		const one = dryRunOne(spec.branch, ref, repoPath);
+		if (one === null) return null; // fall back for the whole node
+		const label = spec.sources[i]!.label;
+		if (one.status === 'conflict') {
+			conflicted.push(label);
+			for (const f of one.files) conflictFiles.add(f);
+		} else if (one.status === 'merged') {
+			merging.push(label);
+			for (const f of one.files) files.add(f);
+		}
+	}
+
+	const approximate =
+		refs.length > 1 && merging.length + conflicted.length > 1
+			? ' (stems after the first predicted against the current branch)'
+			: '';
+
+	if (conflicted.length > 0) {
+		return outcome(
+			'conflict',
+			`conflict in ${conflictFiles.size} file(s) merging ${listLabels(
+				conflicted,
+			)} (dry-run, nothing changed)${approximate}`,
+			[...conflictFiles],
+		);
+	}
+	if (merging.length === 0) {
+		return outcome('up-to-date', 'already up to date');
+	}
+	return outcome(
+		'merged',
+		`dry-run: would merge ${files.size} file(s) into ${spec.branch}` +
+			(refs.length > 1 ? ` from ${listLabels(merging)}` : '') +
+			approximate,
+		[...files],
+	);
 }
 
 async function mergeNode(
@@ -278,9 +347,16 @@ async function mergeNode(
 	}
 
 	// The fetch is the only write a dry-run performs (objects only), exactly as before.
-	let sourceRef = spec.sourceRef;
-	if (spec.fetch) {
-		const f = git(['fetch', spec.fetch.url, spec.fetch.branch], spec.repoPath);
+	const refs: string[] = [];
+	for (const source of spec.sources) {
+		if (!source.fetch) {
+			refs.push(source.ref);
+			continue;
+		}
+		const f = git(
+			['fetch', source.fetch.url, source.fetch.branch],
+			spec.repoPath,
+		);
 		if (!f.ok) {
 			return outcome('error', `fetch failed: ${(f.stderr || f.stdout).trim()}`);
 		}
@@ -290,11 +366,11 @@ async function mergeNode(
 		if (!fetched) {
 			return outcome('error', 'fetch produced no FETCH_HEAD');
 		}
-		sourceRef = fetched;
+		refs.push(fetched);
 	}
 
 	if (opts.dryRun) {
-		const fast = dryRunMerge(spec, sourceRef, spec.repoPath);
+		const fast = dryRunMerge(spec, refs, spec.repoPath);
 		if (fast) return fast;
 	}
 
@@ -312,7 +388,9 @@ async function mergeNode(
 		const where = ws.temporary ? ` in a temporary worktree` : '';
 
 		if (opts.dryRun) {
-			const m = git(['merge', '--no-commit', '--no-ff', sourceRef], ws.dir);
+			// Fallback for git without `merge-tree --write-tree`: only the first stem
+			// can be evaluated this way, since aborting undoes it before the next.
+			const m = git(['merge', '--no-commit', '--no-ff', refs[0]!], ws.dir);
 			if (m.ok) {
 				if (/already up to date/i.test(m.stdout)) {
 					mergeAbort(ws.dir);
@@ -335,55 +413,81 @@ async function mergeNode(
 			);
 		}
 
-		const m = git(
-			[
-				'merge',
-				'--no-ff',
-				'-m',
-				`offshoot-fanout: merge ${spec.sourceLabel} into ${spec.branch}`,
-				sourceRef,
-			],
-			ws.dir,
-		);
-		if (m.ok) {
-			if (/already up to date/i.test(m.stdout)) {
-				return outcome('up-to-date', 'already up to date');
+		// Merge each stem in order. Earlier merges are already committed by the
+		// time a later one conflicts; they are kept (the state is honest, and
+		// re-running continues from there) and the message names both what landed
+		// and what blocked.
+		const files = new Set<string>();
+		const landed: string[] = [];
+
+		for (const [i, ref] of refs.entries()) {
+			const label = spec.sources[i]!.label;
+			const m = git(
+				[
+					'merge',
+					'--no-ff',
+					'-m',
+					`offshoot-fanout: merge ${label} into ${spec.branch}`,
+					ref,
+				],
+				ws.dir,
+			);
+
+			if (m.ok) {
+				if (/already up to date/i.test(m.stdout)) continue;
+				for (const f of mergeCommitFiles(ws.dir)) files.add(f);
+				landed.push(label);
+				continue;
 			}
-			const files = mergeCommitFiles(ws.dir);
-			const verify = spec.verify ? runVerify(spec.verify, ws.dir) : null;
-			// A failed verify is only actionable if there is somewhere to go and look,
-			// so keep the temporary worktree, exactly as a left conflict does.
-			keep = verify?.status === 'failed' && ws.temporary;
+
+			const conflicts = conflictedFiles(ws.dir);
+			const alsoLanded =
+				landed.length > 0 ? `; ${listLabels(landed)} already merged` : '';
+			if (conflicts.length > 0) {
+				const stem = refs.length > 1 ? ` merging ${label}` : '';
+				if (opts.leaveConflicts) {
+					keep = ws.temporary;
+					return outcome(
+						'conflict',
+						keep
+							? `conflict in ${conflicts.length} file(s)${stem} — left in a temporary worktree: ${ws.dir}${alsoLanded}`
+							: `conflict in ${conflicts.length} file(s)${stem} — left for manual resolution${alsoLanded}`,
+						conflicts,
+						{worktree: keep ? ws.dir : null},
+					);
+				}
+				mergeAbort(ws.dir);
+				return outcome(
+					'conflict',
+					`conflict in ${conflicts.length} file(s)${stem} — aborted${alsoLanded}`,
+					conflicts,
+				);
+			}
 			return outcome(
-				'merged',
-				`merged ${files.length} file(s) into ${spec.branch}${where}` +
-					(keep ? `, kept at ${ws.dir}` : ''),
-				files,
-				{verify, worktree: keep ? ws.dir : null},
+				'error',
+				`merge failed${refs.length > 1 ? ` (${label})` : ''}: ${(
+					m.stderr || m.stdout
+				).trim()}${alsoLanded}`,
 			);
 		}
 
-		const conflicts = conflictedFiles(ws.dir);
-		if (conflicts.length > 0) {
-			if (opts.leaveConflicts) {
-				keep = ws.temporary;
-				return outcome(
-					'conflict',
-					keep
-						? `conflict in ${conflicts.length} file(s) — left in a temporary worktree: ${ws.dir}`
-						: `conflict in ${conflicts.length} file(s) — left for manual resolution`,
-					conflicts,
-					{worktree: keep ? ws.dir : null},
-				);
-			}
-			mergeAbort(ws.dir);
-			return outcome(
-				'conflict',
-				`conflict in ${conflicts.length} file(s) — aborted`,
-				conflicts,
-			);
+		if (landed.length === 0) {
+			return outcome('up-to-date', 'already up to date');
 		}
-		return outcome('error', `merge failed: ${(m.stderr || m.stdout).trim()}`);
+
+		const verify = spec.verify ? runVerify(spec.verify, ws.dir) : null;
+		// A failed verify is only actionable if there is somewhere to go and look,
+		// so keep the temporary worktree, exactly as a left conflict does.
+		keep = verify?.status === 'failed' && ws.temporary;
+		return outcome(
+			'merged',
+			`merged ${files.size} file(s) into ${spec.branch}` +
+				(refs.length > 1 ? ` from ${listLabels(landed)}` : '') +
+				where +
+				(keep ? `, kept at ${ws.dir}` : ''),
+			[...files],
+			{verify, worktree: keep ? ws.dir : null},
+		);
 	} finally {
 		if (!keep) closeWorkspace(spec.repoPath, ws);
 	}
@@ -416,19 +520,20 @@ function emptyResult(
 	repo: Repo,
 	branch: string,
 	edge: EdgeKind,
-	parent: NodeRef | null,
+	parents: NodeRef[],
 ): PropagateResult {
 	return {
 		repo,
 		branch,
 		edge,
-		parent,
+		parents,
 		status: 'up-to-date',
 		files: [],
 		message: '',
 		worktree: null,
 		verify: null,
 		children: [],
+		reference: null,
 		notes: [],
 	};
 }
@@ -438,12 +543,17 @@ function emptyResult(
  *
  * A node is a `(repo, branch)` pair. Edges are cross-repo (the `stem` remote,
  * parent's primary branch -> child's root branches) and in-repo (a branch whose
- * config declares another branch of the same repo as its stem). BFS over nodes
- * gives the correct order for free, and each child merges its parent's current
- * LOCAL ref, so an intermediate merge cascades to the leaves in one pass.
+ * config declares one or more other branches of the same repo as its stems).
+ *
+ * The node graph is a DAG, not a tree: an integration branch merges several
+ * stems, so it must not be processed until EVERY one of them is done, or it
+ * merges one side's stale state. That is a topological sweep (Kahn), and each
+ * node merges its stems' current LOCAL refs, so an intermediate merge cascades
+ * to the leaves in one pass.
  *
  * A failed node's descendants are marked `skipped` (still visited/rendered)
- * rather than merged against stale state.
+ * rather than merged against stale state. For a node with several stems, ANY
+ * failed stem blocks it.
  */
 export async function propagate(
 	opts: PropagateOptions,
@@ -485,7 +595,7 @@ export async function propagate(
 				repoFromPath(sourcePath, remoteName),
 				'(unknown)',
 				'source',
-				null,
+				[],
 			);
 			result.status = 'error';
 			result.message = `${wt.name} is a linked worktree of ${wt.mainName}; run from ${wt.mainPath} instead`;
@@ -507,8 +617,10 @@ export async function propagate(
 	const tree = buildTree(repos);
 	const source = repos.find((r) => samePath(r.path, sourcePath))!;
 	const sourcePlan = planner(source);
+	const sourceNode: NodeRef = {repo: source, branch: sourcePlan.primary};
+	const sourceKey = nodeKey(source, sourcePlan.primary);
 
-	const root = emptyResult(source, sourcePlan.primary, 'source', null);
+	const root = emptyResult(source, sourcePlan.primary, 'source', []);
 	root.status = 'source';
 	root.message = sourcePlan.note ? `source (${sourcePlan.note})` : 'source';
 	root.notes = notes;
@@ -517,94 +629,189 @@ export async function propagate(
 		root.message = sourcePlan.error;
 	}
 
-	type Frame = {node: NodeRef; result: PropagateResult; failed: boolean};
-	const queue: Frame[] = [
-		{
-			node: {repo: source, branch: sourcePlan.primary},
-			result: root,
-			failed: root.status === 'error',
-		},
-	];
-	const visited = new Set<string>([nodeKey(source, sourcePlan.primary)]);
+	// ── 1. Discover the reachable node graph ─────────────────────────────────
+	// The whole graph has to exist before anything is merged, because a node's
+	// turn depends on how many stems feed it, which is not knowable lazily.
+	const nodes = new Map<string, NodeRef>([[sourceKey, sourceNode]]);
+	const incoming = new Map<string, {from: NodeRef; edge: EdgeKind}[]>();
+	const outgoing = new Map<string, NodeRef[]>();
+	const stack: NodeRef[] = [sourceNode];
 
-	while (queue.length > 0) {
-		const {node, result, failed} = queue.shift()!;
-		const children: ChildNode[] = childNodes(node, tree, planner);
-
-		for (const child of children) {
-			const key = nodeKey(child.node.repo, child.node.branch);
-			if (visited.has(key)) continue;
-			visited.add(key);
-
-			const childResult = emptyResult(
-				child.node.repo,
-				child.node.branch,
-				child.edge,
-				node,
-			);
-			result.children.push(childResult);
-
-			const childPlan = planner(child.node.repo);
-
-			if (failed) {
-				childResult.status = 'skipped';
-				childResult.message = `parent not updated (${result.status})`;
-				queue.push({node: child.node, result: childResult, failed: true});
-				continue;
+	while (stack.length > 0) {
+		const node = stack.shift()!;
+		const key = nodeKey(node.repo, node.branch);
+		if (outgoing.has(key)) continue; // already expanded
+		const kids = childNodes(node, tree, planner);
+		outgoing.set(
+			key,
+			kids.map((k) => k.node),
+		);
+		for (const kid of kids) {
+			const kidKey = nodeKey(kid.node.repo, kid.node.branch);
+			if (!nodes.has(kidKey)) nodes.set(kidKey, kid.node);
+			const edges = incoming.get(kidKey) ?? [];
+			if (!edges.some((e) => nodeKey(e.from.repo, e.from.branch) === key)) {
+				edges.push({from: node, edge: kid.edge});
 			}
-
-			if (childPlan.ignored !== null) {
-				childResult.status = 'ignored';
-				childResult.message = `ignored (\`${childPlan.ignored}\`)`;
-				queue.push({node: child.node, result: childResult, failed: true});
-				continue;
-			}
-
-			if (childPlan.error) {
-				childResult.status = 'error';
-				childResult.message = childPlan.error;
-				queue.push({node: child.node, result: childResult, failed: true});
-				continue;
-			}
-
-			const spec: MergeSpec =
-				child.edge === 'in-repo'
-					? {
-							repoPath: child.node.repo.path,
-							branch: child.node.branch,
-							fetch: null,
-							sourceRef: node.branch,
-							sourceLabel: node.branch,
-							verify: opts.verify ? childPlan.verify : null,
-						}
-					: {
-							repoPath: child.node.repo.path,
-							branch: child.node.branch,
-							fetch: {url: node.repo.path, branch: node.branch},
-							sourceRef: 'FETCH_HEAD',
-							sourceLabel: `${node.repo.name}@${node.branch}`,
-							verify: opts.verify ? childPlan.verify : null,
-						};
-
-			const merged = await mergeNode(spec, {
-				dryRun: !!opts.dryRun,
-				leaveConflicts: !!opts.leaveConflicts,
-			});
-			childResult.status = merged.status;
-			childResult.files = merged.files;
-			childResult.message = merged.message;
-			childResult.worktree = merged.worktree;
-			childResult.verify = merged.verify;
-			if (childPlan.note) {
-				childResult.message += ` (${childPlan.note})`;
-			}
-
-			queue.push({
-				node: child.node,
-				result: childResult,
-				failed: !SUCCESS.includes(merged.status),
-			});
+			incoming.set(kidKey, edges);
+			stack.push(kid.node);
 		}
+	}
+
+	// Order each node's stems as the config declares them, not as traversal
+	// happened to reach them: the first one decides where the node is rendered in
+	// full, and `["extended/a", "extended/b"]` should mean what it says.
+	for (const [key, node] of nodes) {
+		const edges = incoming.get(key);
+		if (!edges || edges.length < 2) continue;
+		const declared =
+			planner(node.repo).branches.find((b) => b.name === node.branch)?.stems ??
+			[];
+		const rank = (e: {from: NodeRef}) => {
+			if (!samePath(e.from.repo.path, node.repo.path)) return -1; // cross-repo first
+			const i = declared.indexOf(e.from.branch);
+			return i === -1 ? declared.length : i;
+		};
+		edges.sort((a, b) => rank(a) - rank(b));
+	}
+
+	// ── 2. Sweep it in topological order ─────────────────────────────────────
+	const pending = new Map<string, number>();
+	for (const key of nodes.keys()) {
+		// Edges into the source are ignored: it is where the cascade starts, so a
+		// cycle back to it must not stop the sweep from beginning.
+		pending.set(key, key === sourceKey ? 0 : (incoming.get(key)?.length ?? 0));
+	}
+
+	const results = new Map<string, PropagateResult>([[sourceKey, root]]);
+	const blocked = new Map<string, PropagateStatus>();
+	if (root.status !== 'source') blocked.set(sourceKey, root.status);
+
+	/** Attach a finished node under its first parent, cross-linking the rest. */
+	const attach = (key: string, result: PropagateResult) => {
+		const parents = (incoming.get(key) ?? []).map((e) => e.from);
+		const first = parents[0];
+		if (!first) return;
+		const firstResult = results.get(nodeKey(first.repo, first.branch));
+		firstResult?.children.push(result);
+		for (const other of parents.slice(1)) {
+			const otherResult = results.get(nodeKey(other.repo, other.branch));
+			if (!otherResult) continue;
+			const stub = emptyResult(
+				result.repo,
+				result.branch,
+				result.edge,
+				result.parents,
+			);
+			stub.status = result.status;
+			stub.reference = nodeLabel(first.repo, first.branch);
+			otherResult.children.push(stub);
+		}
+	};
+
+	const ready: string[] = [sourceKey];
+	const done = new Set<string>();
+
+	while (ready.length > 0) {
+		const key = ready.shift()!;
+		done.add(key);
+		const node = nodes.get(key)!;
+		const result = results.get(key);
+
+		// The source's own result is pre-built; every other node is merged here.
+		if (!result) {
+			const parents = (incoming.get(key) ?? []).map((e) => e.from);
+			const edge = incoming.get(key)?.[0]?.edge ?? 'cross-repo';
+			const nodeResult = emptyResult(node.repo, node.branch, edge, parents);
+			const plan = planner(node.repo);
+			const blockedBy = blocked.get(key);
+
+			if (blockedBy) {
+				nodeResult.status = 'skipped';
+				nodeResult.message = `parent not updated (${blockedBy})`;
+			} else if (plan.ignored !== null) {
+				nodeResult.status = 'ignored';
+				nodeResult.message = `ignored (\`${plan.ignored}\`)`;
+			} else if (plan.error) {
+				nodeResult.status = 'error';
+				nodeResult.message = plan.error;
+			} else {
+				const sources: MergeSource[] = parents.map((parent) =>
+					samePath(parent.repo.path, node.repo.path)
+						? {
+								fetch: null,
+								ref: parent.branch,
+								label: parent.branch,
+							}
+						: {
+								fetch: {url: parent.repo.path, branch: parent.branch},
+								ref: 'FETCH_HEAD',
+								label: `${parent.repo.name}@${parent.branch}`,
+							},
+				);
+				const merged = await mergeNode(
+					{
+						repoPath: node.repo.path,
+						branch: node.branch,
+						sources,
+						verify: opts.verify ? plan.verify : null,
+					},
+					{
+						dryRun: !!opts.dryRun,
+						leaveConflicts: !!opts.leaveConflicts,
+					},
+				);
+				nodeResult.status = merged.status;
+				nodeResult.files = merged.files;
+				nodeResult.message = merged.message;
+				nodeResult.worktree = merged.worktree;
+				nodeResult.verify = merged.verify;
+				if (plan.note) nodeResult.message += ` (${plan.note})`;
+			}
+
+			results.set(key, nodeResult);
+			attach(key, nodeResult);
+			if (!SUCCESS.includes(nodeResult.status)) {
+				for (const child of outgoing.get(key) ?? []) {
+					const childKey = nodeKey(child.repo, child.branch);
+					if (!blocked.has(childKey)) blocked.set(childKey, nodeResult.status);
+				}
+			}
+		} else if (!SUCCESS.includes(result.status)) {
+			for (const child of outgoing.get(key) ?? []) {
+				const childKey = nodeKey(child.repo, child.branch);
+				if (!blocked.has(childKey)) blocked.set(childKey, result.status);
+			}
+		}
+
+		for (const child of outgoing.get(key) ?? []) {
+			const childKey = nodeKey(child.repo, child.branch);
+			const left = (pending.get(childKey) ?? 0) - 1;
+			pending.set(childKey, left);
+			if (left <= 0 && !done.has(childKey) && !ready.includes(childKey)) {
+				ready.push(childKey);
+			}
+		}
+	}
+
+	// Anything still waiting is in a cycle (repos wired to each other, say).
+	// Report it rather than letting it vanish from the tree.
+	for (const [key, node] of nodes) {
+		if (done.has(key)) continue;
+		const waiting = (incoming.get(key) ?? [])
+			.filter((e) => !done.has(nodeKey(e.from.repo, e.from.branch)))
+			.map((e) => nodeLabel(e.from.repo, e.from.branch));
+		const parents = (incoming.get(key) ?? []).map((e) => e.from);
+		const cycle = emptyResult(
+			node.repo,
+			node.branch,
+			incoming.get(key)?.[0]?.edge ?? 'cross-repo',
+			parents,
+		);
+		cycle.status = 'error';
+		cycle.message = `never reached: still waiting on ${listLabels(waiting)} (stem cycle)`;
+		results.set(key, cycle);
+		attach(key, cycle);
 	}
 
 	return root;
@@ -1038,14 +1245,16 @@ export function driftTree(
 			continue;
 		}
 
-		// in-repo edges: a branch whose stem is another branch of this repo
+		// in-repo edges: a branch whose stem(s) are other branches of this repo.
+		// With several stems, "ahead" means commits in NONE of them, so an
+		// integration branch is not reported as ahead of what it just merged.
 		for (const node of plan.branches) {
-			if (node.stem === null) continue;
-			const r = commitsBetween(repo.path, node.stem, node.name);
+			if (node.stems.length === 0) continue;
+			const r = commitsNotIn(repo.path, node.stems, node.name);
 			results.push({
 				repo,
 				branch: node.name,
-				stem: node.stem,
+				stem: node.stems.join(' + '),
 				ahead: r.ok ? r.commits : [],
 				...(r.ok ? {} : {error: r.error}),
 			});
@@ -1063,7 +1272,7 @@ export function driftTree(
 
 		const fetched = git(['fetch', fetchUrl, parentBranch], repo.path);
 		for (const node of plan.branches) {
-			if (node.stem !== null) continue;
+			if (node.stems.length > 0) continue;
 			if (!fetched.ok) {
 				results.push({
 					repo,
@@ -1074,7 +1283,7 @@ export function driftTree(
 				});
 				continue;
 			}
-			const r = commitsBetween(repo.path, 'FETCH_HEAD', node.name);
+			const r = commitsNotIn(repo.path, ['FETCH_HEAD'], node.name);
 			results.push({
 				repo,
 				branch: node.name,
@@ -1334,6 +1543,7 @@ export async function statusTree(
 		const seenRepos = new Set<string>();
 		let nodeCount = 0;
 		const walk = (n: PropagateResult) => {
+			if (n.reference) return; // counted where it is rendered in full
 			nodeCount++;
 			if (!seenRepos.has(path.resolve(n.repo.path))) {
 				seenRepos.add(path.resolve(n.repo.path));

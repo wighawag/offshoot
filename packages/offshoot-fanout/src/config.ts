@@ -31,10 +31,16 @@ export const CONFIG_FILE = 'fanout.config.json';
 
 export interface BranchConfig {
 	/**
-	 * Another branch **in the same repo** this one derives from (an in-repo
-	 * edge). Absent = a root branch, fed by the cross-repo `stem` remote.
+	 * The branch(es) **in the same repo** this one derives from (in-repo edges).
+	 * Absent = a root branch, fed by the cross-repo `stem` remote.
+	 *
+	 * An array makes the branch an **integration node**: it merges every listed
+	 * stem, in order, and is only processed once all of them are done. That is
+	 * how a branch combining independent extensions (`extended/complete` over
+	 * `extended/hosted-account` + `extended/local-signer`) is expressed without
+	 * chaining them, which would make each extension inherit the previous one.
 	 */
-	stem?: string;
+	stem?: string | string[];
 }
 
 export interface FanoutConfig {
@@ -100,10 +106,25 @@ function validate(raw: unknown): FanoutConfig {
 				throw new Error(`\`branches.${name}\` must be an object`);
 			}
 			const stem = (value as Record<string, unknown>).stem;
-			if (stem !== undefined && typeof stem !== 'string') {
-				throw new Error(`\`branches.${name}.stem\` must be a string`);
+			if (stem !== undefined) {
+				const list = Array.isArray(stem) ? stem : [stem];
+				if (!list.every((s) => typeof s === 'string')) {
+					throw new Error(
+						`\`branches.${name}.stem\` must be a string or an array of strings`,
+					);
+				}
+				if (list.length === 0) {
+					throw new Error(
+						`\`branches.${name}.stem\` is an empty array; omit it for a root branch`,
+					);
+				}
+				if (new Set(list).size !== list.length) {
+					throw new Error(
+						`\`branches.${name}.stem\` lists the same branch twice`,
+					);
+				}
 			}
-			out[name] = stem === undefined ? {} : {stem};
+			out[name] = stem === undefined ? {} : {stem: stem as string | string[]};
 		}
 		config.branches = out;
 	}

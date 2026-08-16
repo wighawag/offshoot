@@ -825,9 +825,11 @@ function runConfig(rest: string[]): number {
 	} else {
 		for (const b of plan.branches) {
 			const kind =
-				b.stem === null
+				b.stems.length === 0
 					? `root (fed by the \`stem\` remote)${b.name === plan.primary ? ', primary' : ''}`
-					: `stem: ${b.stem} (in-repo)`;
+					: b.stems.length === 1
+						? `stem: ${b.stems[0]} (in-repo)`
+						: `stems: ${b.stems.join(', ')} (in-repo, integration node)`;
 			console.log(`    ${repo.name}@${b.name} — ${kind}`);
 		}
 		if (plan.note) console.log(`    (${plan.note})`);

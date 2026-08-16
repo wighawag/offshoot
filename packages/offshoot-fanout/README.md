@@ -73,11 +73,38 @@ Options: `--source`, `--base-dir`, `--repos`, `--registry`, `--branch` (global o
 Two kinds of edge feed a node:
 
 - **cross-repo**: the `stem` remote match (a child's `stem` URL normalizes to a parent's `origin` URL), from the parent's **primary** branch into each of the child's **root** branches. Needs a fetch.
-- **in-repo**: a branch whose stem is another branch *in the same repo*. `variant/full` derives from `main` exactly the way a child repo derives from its parent, and no fetch is involved.
+- **in-repo**: a branch whose stem is another branch *in the same repo*. `variant/full` derives from `main` exactly the way a child repo derives from its parent, and no fetch is involved. A branch can name **several** stems, which makes it an integration node (see below).
 
 A repo with no config is a single node: `main` if that branch exists, otherwise the repo's current HEAD branch (which the report says out loud). So a tree where every repo only uses `main` behaves exactly as before. `--branch <name>` is a **global override**: every repo becomes one node at that branch, and `branches` config is ignored.
 
-BFS over nodes gives the correct order for free: `shadcn@main` → `jolly-roger@main` → `jolly-roger@variant/full`. A failed node still marks its descendants `skipped`.
+A topological sweep over the nodes gives the correct order for free: `shadcn@main` → `jolly-roger@main` → `jolly-roger@variant/full`. A failed node still marks its descendants `skipped`.
+
+### Integration nodes (several stems)
+
+A branch that combines independent extensions names them all:
+
+```json
+"extended/complete": {"stem": ["extended/hosted-account", "extended/local-signer"]}
+```
+
+The alternative, chaining them (`hosted-account` stemming from `local-signer`), says something different and usually wrong: that one extension is built on the other, so each inherits the previous one's work. Several stems keeps them independent and combines them in one place.
+
+The node graph is then a DAG rather than a tree, which changes three things:
+
+- **Order.** An integration node is processed only once **every** stem is done, so it never merges one side's stale state. Ordering is a topological sweep, not a walk.
+- **Merging.** Its stems are merged one at a time, in the order the config lists them, so each gets its own conflict (and its own chance at `--leave-conflicts`).
+- **Reporting.** It is rendered in full under its **first** stem and cross-linked under the others, and counted once:
+
+```
+├─ ✓ jolly-roger@extended/hosted-account merged — merged 3 file(s) into extended/hosted-account
+│  └─ ✓ jolly-roger@extended/complete merged — merged 6 file(s) into extended/complete from extended/hosted-account and extended/local-signer
+└─ ✓ jolly-roger@extended/local-signer merged — merged 3 file(s) into extended/local-signer
+   ↳ jolly-roger@extended/complete (also merges from here; shown under jolly-roger@extended/hosted-account)
+```
+
+If **any** stem fails, the integration node is `skipped` rather than merged from the stems that did work. If a *later* stem conflicts, the earlier merges are already committed and are **kept**: the state is honest, re-running continues from there, and the message says both what landed and what blocked (`conflict in 2 file(s) merging extended/local-signer — aborted; extended/hosted-account already merged`).
+
+One limit worth knowing: `--dry-run` predicts each stem against the branch as it stands, because `git merge-tree` needs a commit and there is no commit for "the branch after stem 1 merged". For a single-stem node that is exact; for an integration node the stems after the first are an approximation, and the message says so.
 
 ## Merging into a branch that is not checked out
 
@@ -169,7 +196,7 @@ A failing verify does not un-merge anything and does not block the cascade (the 
 
 ## drift
 
-Find descendant commits that aren't yet in their parent, the candidate backports. Reported per **node**, against that node's stem: the parent repo's primary branch for a root branch, or the sibling branch named by its `stem` for an in-repo branch.
+Find descendant commits that aren't yet in their parent, the candidate backports. Reported per **node**, against that node's stem: the parent repo's primary branch for a root branch, or the sibling branch named by its `stem` for an in-repo branch. An integration node is compared against **all** of its stems at once (`git log <branch> --not <stem1> <stem2>`), so it is never reported as drifting from what it just merged.
 
 ```bash
 offshoot-fanout drift ./dev-folder --remote stem
@@ -261,8 +288,8 @@ const families = discoverAncestry('/path/to/dev-folder'); // FamilyTree[]
 
 1. **Discover**: scan the source's parent dir for git repos, read each one's `origin` and `stem` remotes. Linked worktrees are excluded here.
 2. **Plan each repo**: read its config branch with `git show` (never checking it out) to get its participating branches and their in-repo stems; with no config, one node at `main` (or the checked-out branch).
-3. **Build the tree**: match each repo's `stem` URL (normalized across SSH/HTTPS/`.git`/case) to another repo's `origin` URL to find its parent, then wire parent-primary → child-root edges and in-repo branch edges.
-4. **Cascade** (BFS over nodes): each child fetches its parent's **local** clone (freshest post-merge state) and merges the fetched commit with `git merge --no-ff`, in place or in a temporary worktree. On conflict, abort (or leave with `--leave-conflicts`) and report the files.
+3. **Build the graph**: match each repo's `stem` URL (normalized across SSH/HTTPS/`.git`/case) to another repo's `origin` URL to find its parent, then wire parent-primary → child-root edges and in-repo branch edges. The result is a DAG, since a branch may name several stems.
+4. **Cascade** (topological sweep): each node waits for every stem, then fetches its parent's **local** clone (freshest post-merge state) and merges the pinned commit with `git merge --no-ff`, in place or in a temporary worktree. On conflict, abort (or leave with `--leave-conflicts`) and report the files. Anything the sweep cannot reach is a stem cycle, and is reported as such rather than dropped.
 5. A failed node's descendants are marked `skipped` (still visited/rendered) rather than merged against stale state.
 
 `--dry-run` fetches objects, then computes the merge **in memory** with `git merge-tree --write-tree`: no branch, index, working tree or worktree is touched. (On git older than 2.38 it falls back to `git merge --no-commit --no-ff` + `git merge --abort`.) One consequence worth knowing: a dry-run evaluates each node against its parent's *current* state, so a node below one that would merge can report `up to date` where a real run would merge.

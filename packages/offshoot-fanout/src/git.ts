@@ -280,15 +280,17 @@ export interface CommitLog {
 }
 
 /**
- * Commits reachable from `toRef` but not from `fromRef`. Both are refs, never
- * HEAD: drift is per node, and a node's branch is usually not what is checked out.
+ * Commits reachable from `toRef` but from NONE of `fromRefs` (`git log <to>
+ * --not <a> <b>`). Refs, never HEAD: drift is per node, and a node's branch is
+ * usually not what is checked out. Several refs is how an integration branch is
+ * compared against every stem it merges at once.
  */
-export function commitsBetween(
+export function commitsNotIn(
 	cwd: string,
-	fromRef: string,
+	fromRefs: string[],
 	toRef: string,
 ): {ok: boolean; commits: CommitLog[]; error?: string} {
-	const r = git(['log', '--format=%H%x09%s', `${fromRef}..${toRef}`], cwd);
+	const r = git(['log', '--format=%H%x09%s', toRef, '--not', ...fromRefs], cwd);
 	if (!r.ok)
 		return {
 			ok: false,

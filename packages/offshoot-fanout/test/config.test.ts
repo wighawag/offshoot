@@ -94,7 +94,7 @@ describe('resolveConfig', () => {
 			originUrl: null,
 			originalUrl: null,
 		});
-		expect(plan.branches).toEqual([{name: 'main', stem: null}]);
+		expect(plan.branches).toEqual([{name: 'main', stems: []}]);
 		expect(plan.primary).toBe('main');
 	});
 
@@ -134,7 +134,7 @@ describe('resolveConfig', () => {
 			originalUrl: null,
 		});
 		expect(plan.error).toBeNull();
-		expect(plan.branches).toEqual([{name: 'main', stem: null}]);
+		expect(plan.branches).toEqual([{name: 'main', stems: []}]);
 		expect(plan.note).toContain('has no fanout.config.json');
 	});
 

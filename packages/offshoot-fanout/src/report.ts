@@ -87,6 +87,15 @@ export function formatReport(
 		const branch = isRoot ? '' : isLast ? '└─ ' : '├─ ';
 		const {mark, color: c} = glyph(node.status);
 		const name = `${node.repo.name}${GRAY}@${node.branch}${RESET}`;
+
+		// A node with several stems is a child of each of them, but the report is
+		// indented text: render it in full under the first, and cross-link here.
+		if (node.reference) {
+			const stub = `${prefix}${branch}${GRAY}↳ ${node.repo.name}@${node.branch} (also merges from here; shown under ${node.reference})${RESET}`;
+			lines.push(color ? stub : stripAnsi(stub));
+			return;
+		}
+
 		let line = `${prefix}${branch}${c}${mark}${RESET} ${name} ${DIM}${label(node.status)}${RESET}`;
 		if (!isRoot && node.message) {
 			line += ` ${GRAY}— ${node.message}${RESET}`;
@@ -145,6 +154,7 @@ export function summarize(root: PropagateResult): Summary {
 		verifyFailed: 0,
 	};
 	const walk = (n: PropagateResult) => {
+		if (n.reference) return; // a cross-link to a node counted where it is rendered
 		if (n.status === 'merged') s.merged++;
 		else if (n.status === 'up-to-date') s.upToDate++;
 		else if (n.status === 'conflict') s.conflicts++;

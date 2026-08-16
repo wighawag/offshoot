@@ -25,8 +25,11 @@ import {childrenOf, matchIgnore, type Repo, type Tree} from './repo.js';
 
 export interface BranchNode {
 	name: string;
-	/** In-repo stem branch, or null for a root branch (fed cross-repo). */
-	stem: string | null;
+	/**
+	 * In-repo stem branches. Empty = a root branch, fed cross-repo. More than
+	 * one = an integration node, merged only once every stem is done.
+	 */
+	stems: string[];
 }
 
 export interface RepoPlan {
@@ -92,38 +95,59 @@ function defaultBranch(repo: Repo): {
 	return {branch: null, note: null};
 }
 
-function orderBranches(branches: Record<string, {stem?: string}>): {
+function orderBranches(branches: Record<string, {stem?: string | string[]}>): {
 	nodes: BranchNode[];
 	error: string | null;
 } {
 	const nodes: BranchNode[] = Object.entries(branches).map(([name, cfg]) => ({
 		name,
-		stem: cfg.stem ?? null,
+		stems:
+			cfg.stem === undefined
+				? []
+				: Array.isArray(cfg.stem)
+					? [...cfg.stem]
+					: [cfg.stem],
 	}));
 	const names = new Set(nodes.map((n) => n.name));
 	for (const n of nodes) {
-		if (n.stem !== null && !names.has(n.stem)) {
-			return {
-				nodes,
-				error: `branch \`${n.name}\` has stem \`${n.stem}\`, which is not listed in \`branches\``,
-			};
-		}
-		if (n.stem === n.name) {
-			return {nodes, error: `branch \`${n.name}\` lists itself as its stem`};
+		for (const stem of n.stems) {
+			if (!names.has(stem)) {
+				return {
+					nodes,
+					error: `branch \`${n.name}\` has stem \`${stem}\`, which is not listed in \`branches\``,
+				};
+			}
+			if (stem === n.name) {
+				return {nodes, error: `branch \`${n.name}\` lists itself as its stem`};
+			}
 		}
 	}
-	// Cycle check: every branch must reach a root by following stems.
-	const byName = new Map(nodes.map((n) => [n.name, n] as const));
+	// Cycle check over the whole in-repo DAG (Kahn): anything still holding an
+	// unsatisfied stem after the sweep is part of a cycle, so it can never merge.
+	const remaining = new Map(
+		nodes.map((n) => [n.name, n.stems.length] as const),
+	);
+	const dependents = new Map<string, string[]>();
 	for (const n of nodes) {
-		const seen = new Set<string>([n.name]);
-		let cur = n.stem;
-		while (cur !== null) {
-			if (seen.has(cur)) {
-				return {nodes, error: `in-repo stem cycle through \`${cur}\``};
-			}
-			seen.add(cur);
-			cur = byName.get(cur)?.stem ?? null;
+		for (const stem of n.stems) {
+			dependents.set(stem, [...(dependents.get(stem) ?? []), n.name]);
 		}
+	}
+	const ready = nodes.filter((n) => n.stems.length === 0).map((n) => n.name);
+	while (ready.length > 0) {
+		const name = ready.shift()!;
+		remaining.delete(name);
+		for (const dependent of dependents.get(name) ?? []) {
+			const left = (remaining.get(dependent) ?? 0) - 1;
+			remaining.set(dependent, left);
+			if (left === 0) ready.push(dependent);
+		}
+	}
+	if (remaining.size > 0) {
+		return {
+			nodes,
+			error: `in-repo stem cycle through \`${[...remaining.keys()].sort().join('`, `')}\``,
+		};
 	}
 	return {nodes, error: null};
 }
@@ -162,7 +186,7 @@ export function planRepo(repo: Repo, opts: PlanOptions = {}): RepoPlan {
 	if (opts.branchOverride) {
 		return {
 			...base,
-			branches: [{name: opts.branchOverride, stem: null}],
+			branches: [{name: opts.branchOverride, stems: []}],
 			primary: opts.branchOverride,
 			note: config.note,
 			error: null,
@@ -172,7 +196,7 @@ export function planRepo(repo: Repo, opts: PlanOptions = {}): RepoPlan {
 	const declared = config.config?.branches;
 	if (declared && Object.keys(declared).length > 0) {
 		const {nodes, error} = orderBranches(declared);
-		const roots = nodes.filter((n) => n.stem === null);
+		const roots = nodes.filter((n) => n.stems.length === 0);
 		if (!error && roots.length === 0) {
 			return {
 				...base,
@@ -208,7 +232,7 @@ export function planRepo(repo: Repo, opts: PlanOptions = {}): RepoPlan {
 
 	return {
 		...base,
-		branches: [{name: fallback.branch, stem: null}],
+		branches: [{name: fallback.branch, stems: []}],
 		primary: fallback.branch,
 		note: [config.note, fallback.note].filter(Boolean).join('; ') || null,
 		error: null,
@@ -233,7 +257,7 @@ export function createPlanner(
 /** The node(s) a repo contributes as the target of a cross-repo edge. */
 export function entryBranches(plan: RepoPlan): string[] {
 	if (plan.error !== null || plan.branches.length === 0) return [plan.primary];
-	const roots = plan.branches.filter((b) => b.stem === null);
+	const roots = plan.branches.filter((b) => b.stems.length === 0);
 	return roots.length > 0 ? roots.map((b) => b.name) : [plan.primary];
 }
 
@@ -250,7 +274,7 @@ export function childNodes(
 	const out: ChildNode[] = [];
 
 	for (const b of plan.branches) {
-		if (b.stem === node.branch) {
+		if (b.stems.includes(node.branch)) {
 			out.push({node: {repo: node.repo, branch: b.name}, edge: 'in-repo'});
 		}
 	}

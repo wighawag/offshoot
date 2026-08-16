@@ -46,8 +46,11 @@ The cross-repo `stem` edge above is only one of the two kinds:
 
 - **cross-repo**: the `stem` remote, the parent's primary branch merges into each of the child's root branches.
 - **in-repo**: a branch whose stem is another branch *in the same repo*. One repo can hold four sibling variants of a template as branches (`main`, `variant/full`, `variant/offline`, `website`) plus scratch branches, and `variant/full` derives from `main` exactly the way a child repo derives from its parent.
+- **in-repo with several stems**: an *integration branch* that combines independent extensions, e.g. `extended/complete` over `extended/hosted-account` + `extended/local-signer`. It merges every stem, in the order listed, and only once all of them are done.
 
-Every report line is `repo@branch`, so the destination branch is always visible. Two traps this exists to close, both observed on a live tree:
+Every report line is `repo@branch`, so the destination branch is always visible. A node with several stems is rendered in full under the first one and cross-linked under the others (`↳ … shown under …`); it is one node, counted once, not two.
+
+If **any** stem of an integration node fails, the node is `skipped` rather than merged from just the stems that worked. If a later stem conflicts, the earlier merges stay committed and the message names both what landed and what blocked: resolve the conflict, then re-run, and the remaining stems continue from there. Two traps this exists to close, both observed on a live tree:
 
 - A repo whose checked-out branch is *not* its node branch used to receive the update on the checked-out branch (a `variant/full` checkout swallowed a `main` update, and the report still said `merged`). The tool now never `git checkout`s: it merges in place if the target branch is checked out, otherwise in a temporary worktree, and says which branch it merged into.
 - A **linked worktree** (`git worktree add`, e.g. `jolly-roger-work`) has a `.git` and inherits its repo's `stem` remote, so it looks exactly like a separate repo and produced a permanent "refusing to merge unrelated histories" false alarm. It is now always skipped and mentioned once as a worktree of its repo. Never add one to a registry or a `--repos` list.
@@ -62,10 +65,16 @@ A template carries no offshoot file in its working tree. Per-repo config sits on
 
 ```json
 {
-  "branches": {"main": {}, "variant/full": {"stem": "main"}},
+  "branches": {
+    "main": {},
+    "variant/full": {"stem": "main"},
+    "extended/complete": {"stem": ["extended/hosted-account", "extended/local-signer"]}
+  },
   "verify": "pnpm install && pnpm --filter ./web check"
 }
 ```
+
+Watch for the difference between an array and a chain. `["a", "b"]` says "combines two independent extensions"; `b` stemming from `a` says "b is built on a", so `b` inherits everything `a` does. Reach for the array when the extensions are siblings, and question any existing chain that was really meant as a combination: a chain silently pollutes each branch with the previous one's work.
 
 `branches` is opt-in: when present, **only** the listed branches participate, which is how scratch branches (`work`) and unrelated variants (`variant/offline`, `website`) stay out of the cascade without being named. A branch with no `stem` is a root node fed by the cross-repo `stem` remote.
 
