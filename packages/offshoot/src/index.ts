@@ -19,6 +19,30 @@ export type {
 export {update, assertNoNameDrift} from './commands/update.js';
 export type {UpdateOptions, UpdateResult} from './commands/update.js';
 
+export {add, explain} from './commands/add.js';
+export type {AddOptions, AddResult} from './commands/add.js';
+
+export {
+	parseBranchGraph,
+	planAdd,
+	addableFrom,
+	featuresOf,
+	resolveFeature,
+	knownBranches,
+	featureBranches,
+	isRoot,
+	isFeature,
+	DEFAULT_GRAPH_BRANCH,
+	GRAPH_FILE,
+} from './features.js';
+export type {
+	AddPlan,
+	Addable,
+	BranchGraph,
+	FeatureLookup,
+	Superset,
+} from './features.js';
+
 export {check} from './commands/check.js';
 export type {CheckOptions, CheckResult} from './commands/check.js';
 

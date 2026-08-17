@@ -200,6 +200,31 @@ describe('tracking a non-default branch', () => {
 		);
 	});
 
+	it('re-points to a branch at the same commit, instead of claiming to be up to date', async () => {
+		// A renamed branch, or a feature branch that has not diverged yet, points
+		// at the same commit under a new name. Reporting "already up to date" and
+		// leaving `track` alone would leave the project following a branch that is
+		// about to stop existing.
+		const template = templateWithVariant();
+		const project = await scaffoldFrom(template.dir);
+		expect(stateOf(project.dir).track).toBe('main');
+
+		git(['branch', 'renamed/main', 'main'], template.dir);
+
+		const result = await update({
+			cwd: project.dir,
+			ref: 'renamed/main',
+			log: quietLog,
+		});
+
+		expect(result.upToDate).toBe(false);
+		expect(stateOf(project.dir).track).toBe('renamed/main');
+		// Same commit, so the content is untouched: only what we follow changed.
+		expect(stateOf(project.dir).ref).toBe(
+			git(['rev-parse', 'main'], template.dir).trim(),
+		);
+	});
+
 	it('pinning to an exact commit does not change which branch is tracked', async () => {
 		const template = templateWithVariant();
 		const project = await scaffoldFrom(`${template.dir}#variant/full`);

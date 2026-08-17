@@ -70,7 +70,20 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 	const prepared = await prepareTemplate(state.template, track);
 
 	try {
-		if (prepared.sha === state.ref && !options.force) {
+		// The tracked branch is part of the answer, not just the commit: two
+		// branches can point at the same commit (a rename, or a feature branch
+		// that has not diverged yet), and re-pointing must still be recorded or
+		// the next plain update follows a branch that no longer exists.
+		const nextTrack =
+			options.ref && !isFloating(options.ref)
+				? state.track
+				: (prepared.track ?? state.track);
+
+		if (
+			prepared.sha === state.ref &&
+			nextTrack === state.track &&
+			!options.force
+		) {
 			log.info(`Already up to date (${state.ref.slice(0, 7)}).`);
 			return {
 				updated: false,
@@ -87,10 +100,7 @@ export async function update(options: UpdateOptions): Promise<UpdateResult> {
 		const nextState: OffshootState = {
 			...state,
 			ref: prepared.sha,
-			track:
-				options.ref && !isFloating(options.ref)
-					? state.track
-					: (prepared.track ?? state.track),
+			track: nextTrack,
 			sourceName: prepared.config.sourceName,
 			// The branch name is fixed at scaffold time: it names a real git
 			// branch in this repository, so a later template config cannot move it.

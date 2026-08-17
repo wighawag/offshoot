@@ -5,6 +5,7 @@
 
 import {scaffold} from './commands/scaffold.js';
 import {update} from './commands/update.js';
+import {add} from './commands/add.js';
 import {check} from './commands/check.js';
 import {rename} from './commands/rename.js';
 import {doctor} from './commands/doctor.js';
@@ -17,6 +18,8 @@ const USAGE = `offshoot - scaffold from a git template, then merge template impr
 Usage
   offshoot new <template> [dir]     scaffold a new project
   offshoot update [--ref <ref>]     merge template improvements into this project
+  offshoot add [<feature>]          switch to the template branch that adds a feature
+                                    (no argument: list what can be added)
   offshoot check                    is a newer template ref available? (non-zero exit if yes)
   offshoot rename <newName>         rename the project on both branches
   offshoot doctor                   lint a template repository (for template authors)
@@ -28,6 +31,7 @@ Template sources
 
 Options
   --ref <ref>          template ref (branch, tag or commit)
+  --dry-run            (add) resolve and report, change nothing
   --answer key=value   supply an answer without prompting (repeatable)
   --eject              (new) no template link: no template branch, no
                        .offshoot.json, integration stripped. Just the code.
@@ -96,6 +100,20 @@ async function main(): Promise<number> {
 				log,
 			});
 			return result.conflicted.length > 0 ? 1 : 0;
+		}
+
+		case 'add': {
+			const result = await add({
+				cwd: process.cwd(),
+				feature: cleaned.find((a) => !a.startsWith('-')),
+				dryRun: flag(cleaned, '--dry-run'),
+				force: flag(cleaned, '--force'),
+				graphBranch: option(cleaned, '--config-branch'),
+				log,
+			});
+			return result.kind === 'added' && result.update.conflicted.length > 0
+				? 1
+				: 0;
 		}
 
 		case 'check': {

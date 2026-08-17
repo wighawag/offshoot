@@ -136,6 +136,7 @@ which is why offshoot prefers positional arguments and interactive prompts. Note
 | --- | --- |
 | `offshoot new <template> [dir]` | Scaffold. Accepts `user/repo`, `github:user/repo`, `user/repo#ref`, a local path. Add `--eject` for no template link at all. |
 | `offshoot update [--ref <ref>]` | Pull template improvements. Refuses a dirty tree; prints the `git merge --abort` hatch on conflict. |
+| `offshoot add [<feature>]` | Switch to the template branch that adds an optional feature. No argument lists what can be added. |
 | `offshoot check` | Is a newer ref available? Non-zero exit for CI. |
 | `offshoot rename <newName>` | Rename the project on both branches (see below). |
 | `offshoot doctor` | Template-author lint, run inside the template repo. |
@@ -512,6 +513,71 @@ offshoot update --ref 12e8df3    # moves `ref`, keeps following `variant/full`
 ```
 
 All of the above is covered in `test/tracking.test.ts`.
+
+### Optional features: `offshoot add`
+
+A template can ship optional features as branches, and publish the combinations it supports as branches too:
+
+```
+main
+└─ with/local-signer
+   ├─ with/messaging
+   ├─ with/sync
+   └─ with/hosted-account
+
+with/all      stem: [with/messaging, with/sync, with/hosted-account]
+```
+
+Adding one is **not a new merge mechanism**. It is a switch to the branch carrying *what you already have, plus that feature*, which is the variant switch above. All `add` does is find that branch:
+
+```bash
+offshoot add messaging        # resolves to: offshoot update --ref with/messaging
+offshoot add                  # no argument: what can I add?
+offshoot add sync --dry-run   # resolve the target, change nothing
+```
+
+Prerequisites come along, because a feature's stem is one: `offshoot add messaging` from `main` switches to `with/messaging` and brings `with/local-signer` with it.
+
+**A combination the template does not publish is refused**, naming the branches that do carry it:
+
+```
+$ offshoot add sync           # on with/messaging
+error: The template publishes no branch carrying exactly
+with/local-signer + with/messaging + with/sync.
+Adding with/sync to this project would need that combination to exist
+upstream, where it can be built and tested.
+
+Branches that carry it, plus more:
+  with/all (also brings with/hosted-account)
+
+Switch with `offshoot update --ref <branch>`.
+```
+
+That refusal is the design rather than a limitation. The target of an `add` is always a real branch someone built and tested, so a project is never handed a combination nobody has ever run. A refusal that keeps coming up is the signal for the template to publish that integration branch, which is what `offshoot-fanout`'s multi-stem support exists to maintain.
+
+#### Where the feature sets come from
+
+Not from the branch names. offshoot reads the **stem graph** the maintainer already declares for `offshoot-fanout`: `fanout.config.json` on the template's config branch (default `offshoot`, `--config-branch` to override). One graph, maintained once, and the template's working tree still carries no offshoot file.
+
+```json
+{
+  "branches": {
+    "main": {},
+    "with/local-signer": {"stem": "main", "feature": true},
+    "with/messaging": {"stem": "with/local-signer", "feature": true},
+    "with/all": {"stem": ["with/messaging", "with/sync", "with/hosted-account"]},
+    "website": {"stem": "main"}
+  }
+}
+```
+
+`"feature": true` is **opt-in**, and it is what makes a branch adoptable. The graph is the maintainer's *cascade* graph, and most of what is in it is not a feature: a `website` branch, a docs branch, an integration branch that only combines others. Defaulting to "every non-root branch is a feature" would offer projects things that were never meant to be adopted, so a branch says so or it is not offered (`offshoot add website` is refused by name, and it is not listed).
+
+A branch carries every declared feature among itself and everything it stems from. So an integration branch declares nothing itself and carries exactly the union of its stems, which is why `with/all` is still offered: it is a reachable combination, not a feature. The base cannot be marked (every project already has it) and offshoot says so rather than accepting it. Nothing in offshoot knows that `with/` exists, so a template can name its branches anything: the argument is matched against the graph, **exact branch name first**, then a unique **last path segment**, so `messaging` finds `with/messaging` but never `with/foo-messaging`. Ambiguity is an error listing the candidates, never a guess, and `track` always records the full branch name.
+
+A naming convention is still worth having, for humans reading the branch list and for `git ls-remote --heads origin 'refs/heads/with/*'`. It is just not what the tool resolves against.
+
+Covered in `test/add.test.ts`, including the graph algebra as pure unit tests.
 
 ## The rename hazard
 
