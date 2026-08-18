@@ -132,7 +132,7 @@ Done when every change in play is assigned to exactly one home, with the reason 
 
 Land the change once, at its home, and let merges carry it. Editing the same logical change in two repos independently guarantees a conflict later.
 
-From the home repo (the landing point), cascade downward with `offshoot-fanout`, which fetches each parent's **local** HEAD so an intermediate merge flows to the leaves in one pass — no push required:
+From the home repo (the landing point), cascade downward with `offshoot-fanout`, which fetches each parent's **local** HEAD so an intermediate merge flows to the leaves in one pass — no push required to cascade (publishing the result is a separate step, see §7):
 
     offshoot-fanout --dry-run                 # see what merges and where it conflicts
     offshoot-fanout                           # clean tree: merge down to every leaf in one pass
@@ -199,6 +199,37 @@ Prefer a real browser check over reading the code when behaviour is UI-level and
 
 Done when each touched node installs, typechecks with zero errors, and builds, and when a repo declares `verify`, that its `--verify` result is green (or its failure is reported).
 
+## 7. Push what you merged, and that means branches, not repos
+
+The cascade works entirely on **local** refs, which is what lets one pass reach the leaves. The flip side is that publishing is a separate step, taken later against an already-merged tree, by which time the cascade output has scrolled away and nothing reminds you what it touched.
+
+Push per **node**, not per repo. `git push origin main` in each repo is the natural habit, and it silently strands every multi-branch node: those merges stay local, `--dry-run` keeps reporting `up to date` (correctly — it compares local refs), and the branches quietly drift from their remotes. Seen in practice: a tree where every node reported up to date while one repo held +21, +21 and +25 unpushed merges on three variant branches.
+
+Enumerate the tracked branches and push the ones that actually carry the work:
+
+```sh
+TIP=<the commit you landed at the home>
+for br in $(git -C <repo> for-each-ref --format='%(refname:short)' refs/heads/); do
+  git -C <repo> rev-parse --abbrev-ref "$br@{upstream}" >/dev/null 2>&1 || continue  # no upstream: skip
+  git -C <repo> merge-base --is-ancestor "$TIP" "$br" || continue                    # not from this cascade
+  git -C <repo> push origin "$br"
+done
+```
+
+Both filters earn their place. The upstream check skips local scratch branches that have nowhere to go. The **ancestry** check is what stops you publishing someone's unrelated work-in-progress branch that merely happens to be ahead: a cascade is no reason to push a branch it never touched, and "it was ahead" is not consent.
+
+Every cascade push should be a **fast-forward**. If one is rejected, or a branch reports behind, stop rather than reaching for `--force`: the remote moved while you worked, so the merge you are about to publish was computed against a stale parent and needs redoing.
+
+Done when every node reports `rev-list --count <upstream>..<branch>` as 0, or is a branch you consciously chose not to push and said so in the report.
+
+When you write that check as a loop, resolve the upstream **per branch**:
+
+```sh
+up=$(git -C <repo> rev-parse --abbrev-ref "$br@{upstream}") && git -C <repo> rev-list --count "$up..$br"
+```
+
+A bare `@{upstream}` inside the loop resolves against the repo's *current* HEAD, not against `$br`, so every branch gets measured from the checked-out branch's remote instead of its own. It reports large fabricated counts for branches that are in fact fully pushed, which reads exactly like the problem this section is about and sends you chasing it twice.
+
 ## Dependencies
 
 Before changing any dependency or running an update, watch for two classes of trap that break **silently** rather than loudly:
@@ -210,4 +241,4 @@ Also: where `package.json` has a `packageManager` field, the CI workflow must no
 
 ## Report
 
-Per node (`repo@branch`): what changed, which home it landed at and why, what was cascaded, how any judgement-call conflict was resolved, and the verification output. Name the branch, never just the repo: "merged into jolly-roger" is the report that hid a lost update for weeks. Call out what you could not verify, what you deliberately did not bump, and any pre-existing failure found along the way. A merge is not done until the result builds.
+Per node (`repo@branch`): what changed, which home it landed at and why, what was cascaded, how any judgement-call conflict was resolved, the verification output, and whether it was **pushed** (naming any branch deliberately left unpushed, and why). Name the branch, never just the repo: "merged into jolly-roger" is the report that hid a lost update for weeks. Call out what you could not verify, what you deliberately did not bump, and any pre-existing failure found along the way. A merge is not done until the result builds.
