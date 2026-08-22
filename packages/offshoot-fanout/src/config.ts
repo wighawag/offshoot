@@ -168,9 +168,7 @@ function validate(raw: unknown): FanoutConfig {
 			}
 			out[name] = {
 				...(stem === undefined ? {} : {stem: stem as string | string[]}),
-				...(stemBranch === undefined
-					? {}
-					: {stemBranch: stemBranch as string}),
+				...(stemBranch === undefined ? {} : {stemBranch: stemBranch as string}),
 			};
 		}
 		config.branches = out;

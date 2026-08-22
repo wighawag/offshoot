@@ -307,7 +307,9 @@ export function orphanEntries(
 ): OrphanEntry[] {
 	const plan = planner(repo);
 	const known = new Set(
-		plan.branches.length > 0 ? plan.branches.map((b) => b.name) : [plan.primary],
+		plan.branches.length > 0
+			? plan.branches.map((b) => b.name)
+			: [plan.primary],
 	);
 	const out: OrphanEntry[] = [];
 	for (const child of childrenOf(repo, tree)) {
