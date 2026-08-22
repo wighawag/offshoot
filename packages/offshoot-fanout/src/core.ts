@@ -40,6 +40,7 @@ import {
 	createPlanner,
 	nodeKey,
 	nodeLabel,
+	orphanEntries,
 	type EdgeKind,
 	type NodeRef,
 } from './nodes.js';
@@ -615,6 +616,21 @@ export async function propagate(
 	}
 
 	const tree = buildTree(repos);
+
+	// A `stemBranch` naming a branch the parent does not have would drop the
+	// child out of the graph silently, and a node missing from a report is the
+	// failure nobody chases, because there is nothing on screen to chase. Say it
+	// once, up front, before anything merges.
+	for (const repo of repos) {
+		for (const orphan of orphanEntries(repo, tree, planner)) {
+			const note =
+				`${nodeLabel(orphan.repo, orphan.branch)} wants to be fed from ` +
+				`\`${orphan.stemBranch}\` of ${orphan.parent.name}, which has no such ` +
+				`participating branch; it is NOT in this cascade`;
+			if (!notes.includes(note)) notes.push(note);
+		}
+	}
+
 	const source = repos.find((r) => samePath(r.path, sourcePath))!;
 	const sourcePlan = planner(source);
 	const sourceNode: NodeRef = {repo: source, branch: sourcePlan.primary};

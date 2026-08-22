@@ -30,6 +30,11 @@ export interface BranchNode {
 	 * one = an integration node, merged only once every stem is done.
 	 */
 	stems: string[];
+	/**
+	 * For a root branch: which branch of the PARENT REPO feeds it. Null = the
+	 * parent's primary, which is the default and the common case.
+	 */
+	stemBranch: string | null;
 }
 
 export interface RepoPlan {
@@ -95,7 +100,9 @@ function defaultBranch(repo: Repo): {
 	return {branch: null, note: null};
 }
 
-function orderBranches(branches: Record<string, {stem?: string | string[]}>): {
+function orderBranches(
+	branches: Record<string, {stem?: string | string[]; stemBranch?: string}>,
+): {
 	nodes: BranchNode[];
 	error: string | null;
 } {
@@ -107,6 +114,7 @@ function orderBranches(branches: Record<string, {stem?: string | string[]}>): {
 				: Array.isArray(cfg.stem)
 					? [...cfg.stem]
 					: [cfg.stem],
+		stemBranch: cfg.stemBranch ?? null,
 	}));
 	const names = new Set(nodes.map((n) => n.name));
 	for (const n of nodes) {
@@ -186,7 +194,7 @@ export function planRepo(repo: Repo, opts: PlanOptions = {}): RepoPlan {
 	if (opts.branchOverride) {
 		return {
 			...base,
-			branches: [{name: opts.branchOverride, stems: []}],
+			branches: [{name: opts.branchOverride, stems: [], stemBranch: null}],
 			primary: opts.branchOverride,
 			note: config.note,
 			error: null,
@@ -232,7 +240,7 @@ export function planRepo(repo: Repo, opts: PlanOptions = {}): RepoPlan {
 
 	return {
 		...base,
-		branches: [{name: fallback.branch, stems: []}],
+		branches: [{name: fallback.branch, stems: [], stemBranch: null}],
 		primary: fallback.branch,
 		note: [config.note, fallback.note].filter(Boolean).join('; ') || null,
 		error: null,
@@ -254,16 +262,78 @@ export function createPlanner(
 	};
 }
 
+/** A branch a repo offers as the target of a cross-repo edge. */
+export interface EntryBranch {
+	/** The branch in the child repo that receives the merge. */
+	branch: string;
+	/**
+	 * The branch of the PARENT repo it wants to be fed from, or null for the
+	 * parent's primary.
+	 */
+	from: string | null;
+}
+
 /** The node(s) a repo contributes as the target of a cross-repo edge. */
-export function entryBranches(plan: RepoPlan): string[] {
-	if (plan.error !== null || plan.branches.length === 0) return [plan.primary];
+export function entryBranches(plan: RepoPlan): EntryBranch[] {
+	if (plan.error !== null || plan.branches.length === 0)
+		return [{branch: plan.primary, from: null}];
 	const roots = plan.branches.filter((b) => b.stems.length === 0);
-	return roots.length > 0 ? roots.map((b) => b.name) : [plan.primary];
+	if (roots.length === 0) return [{branch: plan.primary, from: null}];
+	return roots.map((b) => ({branch: b.name, from: b.stemBranch}));
 }
 
 /**
- * Children of a node: its in-repo branch children always, plus (only from the
- * repo's primary branch) the root branches of every cross-repo child repo.
+ * A child repo that names a parent branch which does not exist.
+ *
+ * Reported rather than quietly ignored: an unmatched `stemBranch` would drop
+ * the child out of the graph entirely, and a node missing from a report is the
+ * one failure mode nobody investigates, because there is nothing to see.
+ */
+export interface OrphanEntry {
+	repo: Repo;
+	branch: string;
+	stemBranch: string;
+	parent: Repo;
+}
+
+/**
+ * Cross-repo children of `repo` whose declared `stemBranch` matches no branch
+ * the parent actually participates with.
+ */
+export function orphanEntries(
+	repo: Repo,
+	tree: Tree,
+	planner: (r: Repo) => RepoPlan,
+): OrphanEntry[] {
+	const plan = planner(repo);
+	const known = new Set(
+		plan.branches.length > 0 ? plan.branches.map((b) => b.name) : [plan.primary],
+	);
+	const out: OrphanEntry[] = [];
+	for (const child of childrenOf(repo, tree)) {
+		for (const entry of entryBranches(planner(child))) {
+			if (entry.from !== null && !known.has(entry.from)) {
+				out.push({
+					repo: child,
+					branch: entry.branch,
+					stemBranch: entry.from,
+					parent: repo,
+				});
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * Children of a node: its in-repo branch children always, plus the root
+ * branches of every cross-repo child repo that names THIS branch as its source.
+ *
+ * A child's root branch is fed from the parent's primary by default, which is
+ * the common case and what an unconfigured tree does. A child built on a
+ * VARIANT of its parent says so with `stemBranch`, and is then fed from that
+ * branch instead. So the cross-repo loop is not gated on the primary: any
+ * participating branch can feed a child that asks for it.
  */
 export function childNodes(
 	node: NodeRef,
@@ -279,11 +349,13 @@ export function childNodes(
 		}
 	}
 
-	if (node.branch === plan.primary) {
-		for (const child of childrenOf(node.repo, tree)) {
-			const childPlan = planner(child);
-			for (const branch of entryBranches(childPlan)) {
-				out.push({node: {repo: child, branch}, edge: 'cross-repo'});
+	for (const child of childrenOf(node.repo, tree)) {
+		for (const entry of entryBranches(planner(child))) {
+			if ((entry.from ?? plan.primary) === node.branch) {
+				out.push({
+					node: {repo: child, branch: entry.branch},
+					edge: 'cross-repo',
+				});
 			}
 		}
 	}

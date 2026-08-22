@@ -41,6 +41,30 @@ export interface BranchConfig {
 	 * chaining them, which would make each extension inherit the previous one.
 	 */
 	stem?: string | string[];
+	/**
+	 * Which branch **of the parent repo** feeds this root branch, when it is not
+	 * the parent's primary.
+	 *
+	 * Only meaningful on a root branch (one with no in-repo `stem`), because that
+	 * is the branch a cross-repo edge lands on. Default: the parent's primary.
+	 *
+	 * This exists because a repo can be built on a VARIANT of its parent rather
+	 * than on the parent's mainline, and without it such a repo is wired to the
+	 * wrong parent by construction. Observed cost on a live tree: a site built on
+	 * `with/local-signer` merged from `main` reported 13 conflicts, of which 10
+	 * were purely the absent variant, against 3 from its real parent. Worse than
+	 * the noise, the ordinary resolution of those 10 silently reverts the site off
+	 * the variant it is built on, in files that still compile.
+	 *
+	 * ```json
+	 * {"branches": {"main": {"stemBranch": "with/local-signer"}}}
+	 * ```
+	 *
+	 * A name that matches no branch of the parent is a hard error rather than a
+	 * fallback to the primary: silently cascading from the wrong branch is the
+	 * exact failure this key exists to prevent.
+	 */
+	stemBranch?: string;
 }
 
 export interface FanoutConfig {
@@ -124,7 +148,30 @@ function validate(raw: unknown): FanoutConfig {
 					);
 				}
 			}
-			out[name] = stem === undefined ? {} : {stem: stem as string | string[]};
+			const stemBranch = (value as Record<string, unknown>).stemBranch;
+			if (stemBranch !== undefined) {
+				if (typeof stemBranch !== 'string' || stemBranch.length === 0) {
+					throw new Error(
+						`\`branches.${name}.stemBranch\` must be a non-empty string`,
+					);
+				}
+				if (stem !== undefined) {
+					// One or the other: `stem` says another branch HERE feeds it, and
+					// `stemBranch` says a branch of the PARENT REPO does. Accepting both
+					// would leave the merge order undefined and the intent unreadable.
+					throw new Error(
+						`\`branches.${name}\` sets both \`stem\` and \`stemBranch\`; ` +
+							'`stem` is a branch in this repo and `stemBranch` is a branch of ' +
+							'the parent repo, so a branch has one or the other',
+					);
+				}
+			}
+			out[name] = {
+				...(stem === undefined ? {} : {stem: stem as string | string[]}),
+				...(stemBranch === undefined
+					? {}
+					: {stemBranch: stemBranch as string}),
+			};
 		}
 		config.branches = out;
 	}

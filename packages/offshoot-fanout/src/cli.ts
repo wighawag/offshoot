@@ -231,6 +231,14 @@ tree, index and current branch are never touched, and the orphan branch is creat
 unrelated branches stay out of the cascade without being named. A branch with no \`stem\` is a root
 node, fed by the cross-repo \`stem\` remote. \`verify\` only ever runs under \`fanout --verify\`.
 
+\`stem\` is always a branch in the SAME repo. A root branch fed by a branch of the PARENT repo other
+than its primary names it with \`stemBranch\`, which is what a repo built on a variant needs:
+
+    {"branches": {"main": {"stemBranch": "with/local-signer"}}}
+
+A \`stemBranch\` naming a branch the parent does not participate with is reported and the node is
+left out, rather than quietly falling back to the primary and cascading from the wrong branch.
+
 Naming: the default branch name is flat (\`${DEFAULT_CONFIG_BRANCH}\`). Git cannot hold both \`${DEFAULT_CONFIG_BRANCH}\` and any
 \`${DEFAULT_CONFIG_BRANCH}/*\` branch, so pick one convention: keep the flat name, or use a nested config branch
 (\`--config-branch ${DEFAULT_CONFIG_BRANCH}/fanout\`) and never create the flat one.

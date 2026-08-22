@@ -274,10 +274,14 @@ describe('multi-stem config', () => {
 		});
 		expect(plan.error).toBeNull();
 		expect(plan.branches).toEqual([
-			{name: 'main', stems: []},
-			{name: 'extended/a', stems: ['main']},
-			{name: 'extended/b', stems: ['main']},
-			{name: 'extended/complete', stems: ['extended/a', 'extended/b']},
+			{name: 'main', stems: [], stemBranch: null},
+			{name: 'extended/a', stems: ['main'], stemBranch: null},
+			{name: 'extended/b', stems: ['main'], stemBranch: null},
+			{
+				name: 'extended/complete',
+				stems: ['extended/a', 'extended/b'],
+				stemBranch: null,
+			},
 		]);
 
 		for (const [bad, expected] of [

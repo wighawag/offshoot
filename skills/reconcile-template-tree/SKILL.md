@@ -44,7 +44,7 @@ Run it rather than trusting any snapshot. Sites get built on these templates wit
 
 The cross-repo `stem` edge above is only one of the two kinds:
 
-- **cross-repo**: the `stem` remote, the parent's primary branch merges into each of the child's root branches.
+- **cross-repo**: the `stem` remote, a branch of the parent merges into each of the child's root branches. The parent's primary by default; a child built on a VARIANT of its parent names the branch it grows from with `stemBranch` (see below).
 - **in-repo**: a branch whose stem is another branch *in the same repo*. One repo can hold four sibling variants of a template as branches (`main`, `variant/full`, `variant/offline`, `website`) plus scratch branches, and `variant/full` derives from `main` exactly the way a child repo derives from its parent.
 - **in-repo with several stems**: an *integration branch* that combines independent extensions, e.g. `extended/complete` over `extended/hosted-account` + `extended/local-signer`. It merges every stem, in the order listed, and only once all of them are done.
 
@@ -77,6 +77,14 @@ A template carries no offshoot file in its working tree. Per-repo config sits on
 Watch for the difference between an array and a chain. `["a", "b"]` says "combines two independent extensions"; `b` stemming from `a` says "b is built on a", so `b` inherits everything `a` does. Reach for the array when the extensions are siblings, and question any existing chain that was really meant as a combination: a chain silently pollutes each branch with the previous one's work.
 
 `branches` is opt-in: when present, **only** the listed branches participate, which is how scratch branches (`work`) and unrelated variants (`variant/offline`, `website`) stay out of the cascade without being named. A branch with no `stem` is a root node fed by the cross-repo `stem` remote.
+
+**A cross-repo edge has a branch at both ends, and the child names the far one.** `stem` is always a branch in the SAME repo; a root branch fed from a branch of the PARENT repo other than its primary says so with `stemBranch`:
+
+```json
+{"branches": {"main": {"stemBranch": "with/local-signer"}}}
+```
+
+Reach for it whenever a repo was built on a variant rather than on the parent's mainline, and check for it whenever a descendant conflicts far more than its siblings. Measured on a live tree: a site built on `with/local-signer` and fed from `main` reported **13 conflicted files against 3** from its real parent, and the ten extra were exactly the files that differ between the two branches. That is worse than noise, because the ordinary resolution of those ten silently reverts the site off the variant it is built on, in files that still compile, and thirteen conflicts in a repo that is behind reads as ordinary drift. A `stemBranch` naming a branch the parent does not participate with is reported and the node is excluded, rather than quietly falling back to the primary.
 
 Write it with plumbing, which never touches the working tree or the current branch:
 
