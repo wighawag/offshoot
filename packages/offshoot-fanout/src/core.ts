@@ -515,6 +515,27 @@ function runVerify(command: string, cwd: string): VerifyOutcome {
 	};
 }
 
+/**
+ * Statuses after which a node's children can still be merged. Anything not in
+ * this list blocks the subtree below it (children become `skipped`).
+ *
+ * `ignored` is deliberately NOT here, and that is a decision rather than an
+ * oversight: the cascade works by merging a node's CURRENT local ref into its
+ * children, so a node we did not merge into carries none of the source's
+ * change. Merging it into a grandchild would either be a no-op or, worse, push
+ * the grandchild's history through a repo the maintainer has declared
+ * off-limits. There is no route through an ignored node, so its children
+ * report `skipped — parent not updated (ignored)`: accurate, and it names the
+ * exclusion as the cause so the maintainer can see the whole subtree is out by
+ * their own instruction, not stuck on a fixable failure.
+ *
+ * The alternative (treat an ignored node as transparent and merge its children
+ * straight from the grandparent) is rejected: it would silently rewire the
+ * tree, and a child of an ignored repo usually descends from it for a reason.
+ * A maintainer who wants that subtree updated should ignore the node's repo
+ * only, then run the fanout from the intermediate repo, or re-point the child's
+ * `stem`.
+ */
 const SUCCESS: PropagateStatus[] = ['source', 'merged', 'up-to-date'];
 
 function emptyResult(
@@ -742,12 +763,24 @@ export async function propagate(
 			const plan = planner(node.repo);
 			const blockedBy = blocked.get(key);
 
-			if (blockedBy) {
-				nodeResult.status = 'skipped';
-				nodeResult.message = `parent not updated (${blockedBy})`;
-			} else if (plan.ignored !== null) {
+			// Exclusion is tested FIRST, before blocking. Being ignored is a property
+			// of the node itself (the maintainer said "never merge into this"), and it
+			// does not depend on what happened upstream; `skipped` is only a
+			// meaningful thing to say about a node that would otherwise be merged.
+			// Testing `blockedBy` first made an ignored node print `skipped — parent
+			// not updated (conflict)` whenever an ancestor conflicted: the exact
+			// wording of a node that IS in the cascade and merely waiting for a fix.
+			// A maintainer would then read the run as "this merges once I fix the
+			// parent" and conclude their exclusion was not in force, which is the one
+			// moment the exclusion most needs to be legible: repos get ignored
+			// because merging into them would be actively wrong (a hand port with no
+			// shared history, live work on a branch the fanout does not target).
+			if (plan.ignored !== null) {
 				nodeResult.status = 'ignored';
 				nodeResult.message = `ignored (\`${plan.ignored}\`)`;
+			} else if (blockedBy) {
+				nodeResult.status = 'skipped';
+				nodeResult.message = `parent not updated (${blockedBy})`;
 			} else if (plan.error) {
 				nodeResult.status = 'error';
 				nodeResult.message = plan.error;

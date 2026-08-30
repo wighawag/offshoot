@@ -22,6 +22,8 @@ import {
 	saveRegistry,
 	statusTree,
 	formatReport,
+	formatStatusReport,
+	summarize,
 } from '../src/index.js';
 import {
 	branchSha,
@@ -216,6 +218,174 @@ describe('explicit ignore', () => {
 		expect(results[0]!.ignored).toEqual(['deprecated@main']);
 		expect(results[0]!.counts.merged).toBe(1); // only `keep`
 		expect(branchSha(deprecated, 'main')).toBeTruthy();
+	});
+});
+
+/**
+ * An exclusion is a property of the node itself; being blocked is a property of
+ * what happened above it. The two used to be tested in the wrong order, so an
+ * ignored repo under a conflicting ancestor printed `skipped — parent not
+ * updated (conflict)`: word for word what a repo that IS in the cascade prints
+ * while it waits for the conflict to be fixed. That is the one moment the
+ * exclusion has to be legible, because a maintainer reading `skipped` concludes
+ * the protection is off and either works around it with `--repos` or trusts a
+ * re-run after fixing the parent.
+ */
+describe('an exclusion outranks a block', () => {
+	/** a -> b -> hand-port, with hand-port deliberately excluded. */
+	function chain() {
+		const base = tempDir();
+		const a = initRepo(base, 'a', {'file.txt': 'v1\n'});
+		setRemote(a.dir, 'origin', url('a'));
+		const b = cloneChild(base, a.dir, 'b', url('a'));
+		const handPort = cloneChild(base, b, 'hand-port', url('b'));
+		return {base, a, b, handPort};
+	}
+
+	/** Diverge b on the line a is about to change, so b conflicts. */
+	function conflictInB(aDir: string, bDir: string) {
+		writeFile(bDir, 'file.txt', 'b-change\n');
+		commit(bDir, 'diverge in b');
+		writeFile(aDir, 'file.txt', 'v2\n');
+		commit(aDir, 'change in a');
+	}
+
+	const lineFor = (report: string, label: string) =>
+		report.split('\n').find((l) => l.includes(label)) ?? '';
+
+	it('reports `ignored`, not `skipped`, when the parent conflicts', async () => {
+		const {base, a, b, handPort} = chain();
+		conflictInB(a.dir, b);
+		const before = branchSha(handPort, 'main');
+
+		const result = await propagate({
+			sourcePath: a.dir,
+			baseDir: base,
+			ignore: ['hand-port'],
+		});
+		const report = formatReport(result, {color: false});
+
+		const bNode = result.children[0]!;
+		expect(bNode.repo.name).toBe('b');
+		expect(bNode.status).toBe('conflict');
+
+		const node = bNode.children[0]!;
+		expect(node.repo.name).toBe('hand-port');
+		expect(node.status).toBe('ignored');
+		expect(node.message).toContain('hand-port');
+		expect(node.message).not.toContain('parent not updated');
+
+		// the wording is the actual interface: assert on the rendered report
+		expect(lineFor(report, 'hand-port@main')).toContain(
+			'hand-port@main ignored',
+		);
+		expect(report).not.toContain('hand-port@main skipped');
+		expect(report).not.toContain('hand-port@main skipped — parent not updated');
+		expect(summarize(result).ignored).toBe(1);
+		expect(summarize(result).skipped).toBe(0);
+
+		expect(branchSha(handPort, 'main')).toBe(before);
+	});
+
+	it('reads the same before and after the parent conflict is resolved', async () => {
+		const {base, a, b, handPort} = chain();
+		conflictInB(a.dir, b);
+		const before = branchSha(handPort, 'main');
+
+		const whileBlocked = formatReport(
+			await propagate({
+				sourcePath: a.dir,
+				baseDir: base,
+				ignore: ['hand-port'],
+			}),
+			{color: false},
+		);
+
+		// resolve b by landing a's content there, so the next run merges cleanly
+		writeFile(b, 'file.txt', 'v2\n');
+		commit(b, 'resolve in b');
+
+		const resolved = await propagate({
+			sourcePath: a.dir,
+			baseDir: base,
+			ignore: ['hand-port'],
+		});
+		expect(resolved.children[0]!.status).not.toBe('conflict');
+		const afterResolve = formatReport(resolved, {color: false});
+
+		// same registry, same flag: the exclusion must read identically either way
+		expect(lineFor(whileBlocked, 'hand-port@main')).toBe(
+			lineFor(afterResolve, 'hand-port@main'),
+		);
+		expect(lineFor(afterResolve, 'hand-port@main')).toContain('ignored');
+		expect(branchSha(handPort, 'main')).toBe(before);
+	});
+
+	it('is counted as ignored, not blocked, by status', async () => {
+		const {base, a, b} = chain();
+		conflictInB(a.dir, b);
+
+		const results = await statusTree(
+			discoverRepos(base, 'stem'),
+			'stem',
+			undefined,
+			{ignore: ['hand-port']},
+		);
+		expect(results.length).toBe(1);
+		const status = results[0]!;
+		expect(status.counts.conflict).toBe(1); // b
+		expect(status.ignored).toEqual(['hand-port@main']);
+		expect(status.blocked).toEqual([]);
+		expect(status.counts.ignored).toBe(1);
+		expect(status.counts.skipped).toBe(0);
+
+		const report = formatStatusReport(results, {color: false});
+		expect(report).toContain('ignored: hand-port@main');
+		expect(report).not.toContain('blocked: hand-port@main');
+	});
+
+	/**
+	 * The decided behaviour, asserted so it stays a decision: an ignored node
+	 * still blocks its own children. The cascade merges a node's current local
+	 * ref into its children, and an ignored node never received the change, so
+	 * there is no route through it. Its children say so, naming the exclusion.
+	 */
+	it('still blocks its own children, naming the exclusion as the cause', async () => {
+		const base = tempDir();
+		const a = initRepo(base, 'a', {'file.txt': 'v1\n'});
+		setRemote(a.dir, 'origin', url('a'));
+		const handPort = cloneChild(base, a.dir, 'hand-port', url('a'));
+		const downstream = cloneChild(
+			base,
+			handPort,
+			'downstream',
+			url('hand-port'),
+		);
+		writeFile(a.dir, 'file.txt', 'v2\n');
+		commit(a.dir, 'change in a');
+
+		const result = await propagate({
+			sourcePath: a.dir,
+			baseDir: base,
+			ignore: ['hand-port'],
+		});
+		const report = formatReport(result, {color: false});
+
+		const node = result.children[0]!;
+		expect(node.repo.name).toBe('hand-port');
+		expect(node.status).toBe('ignored');
+
+		const child = node.children[0]!;
+		expect(child.repo.name).toBe('downstream');
+		expect(child.status).toBe('skipped');
+		expect(child.message).toBe('parent not updated (ignored)');
+		expect(report).toContain(
+			'downstream@main skipped — parent not updated (ignored)',
+		);
+
+		// and nothing below the exclusion was touched
+		expect(fileOnBranch(handPort, 'main', 'file.txt')).toBe('v1\n');
+		expect(fileOnBranch(downstream, 'main', 'file.txt')).toBe('v1\n');
 	});
 });
 
