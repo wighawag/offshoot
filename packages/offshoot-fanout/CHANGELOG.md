@@ -1,5 +1,73 @@
 # offshoot-fanout
 
+## 0.6.0
+
+### Minor Changes
+
+- de6667a: `clone` now produces a tree `fanout` can actually run on, by creating a local tracking branch for every branch each repo's own `fanout.config.json` names.
+
+  The verb promised "the tree comes back on a machine that has never seen it", and what came back could not run the tool's own primary verb. `git clone` leaves one local branch, so every other node of a repo was a remote-tracking ref the cascade cannot merge into. Measured on the real 11-repo tree, `clone` into an empty directory followed immediately by `offshoot-fanout --dry-run` reported:
+
+  ```
+  ✗ template-commit-reveal@with/pixi-js  CONFLICT — conflict in 0 file(s) merging main
+  ⊘ template-commit-reveal@with/all      skipped — parent not updated (conflict)
+  ⊘ reveal-or-die@main                   skipped — parent not updated (skipped)
+  ```
+
+  Nothing was wrong with the tree, and `conflict in 0 file(s)` was a second bug on top of the first (fixed separately). The same clone now reports all 17 nodes up to date with no other setup.
+
+  This is not a new read. `clone` already parses every repo's config off its config branch to discover the tree's edges, and `.branches` is in the object it has just parsed, so the loop every consumer was re-implementing is now done once, where the data already is.
+
+  Decisions worth knowing:
+
+  - **On by default**, with `--no-branches` for a minimal clone. A tree that cannot run `fanout` is broken rather than minimal.
+  - **A named branch origin does not have is reported and exits non-zero**, per repo and in a summary. An existing clone is fetched first, so "not on origin" is a fact rather than a claim about a stale ref cache; `--dry-run` does not write, so it labels its answer provisional instead.
+  - **The exit code follows one rule**: non-zero when what came back is not what was asked for. That now also covers a repo that was _skipped_ because its directory was taken, and a search the host itself truncated, both of which lose more than a branch does and both of which used to exit 0 in silence. A missing credential stays zero, because `--require-auth` already exists to make that call.
+  - **An existing local branch is never moved**, so re-running on a machine with work in progress is safe. The whole verb stays idempotent.
+  - **The config branch is materialised too**, and is the single exception to "never move a branch": it is fast-forwarded to origin on a re-run, because it holds no work, is never checked out, and a stale copy silently changes which nodes exist at all (a local `offshoot` outranks `origin/offshoot` in `resolveConfig`). Divergence is reported, not resolved. Materialising it at all fixes a worse bug: without a local `offshoot`, `config stem` found no parent ref, committed a _parentless_ config commit, announced "created", and printed a push command origin rejects as non-fast-forward.
+  - **Branches no config names are not created**, including `tooling`. `branches` exists to keep scratch branches out of the cascade without naming them, and `tooling` is a maintainer's local cache of the stem's orphan branch, in no config and unmergeable by construction, so rebuilding it would mean inventing an edge no config states. The help and README say so, with the one-liner (`git fetch stem tooling:tooling`).
+  - **The `stem` remote is wired but not fetched.** The cascade fetches a cross-repo edge from the parent's sibling clone, not from that remote, so a fetch per repo would buy nothing. Also stated rather than left to be discovered.
+
+### Patch Changes
+
+- de6667a: `clone` no longer rebuilds the wrong tree, or writes into a repo it was not pointed at.
+
+  Three failure modes found while reviewing the verb as a whole, all of which reported success:
+
+  - **The family was identified from whatever branch happened to be checked out.** The root commit probe was `rev-list --max-parents=0 HEAD`. A maintainer of a tree like this keeps orphan branches (the config branch; a `tooling` branch), and with one of those checked out the probe returns the orphan's root commit, the host search matches only repos carrying that hash, and `clone` reports a one-repo family as if it were the tree. It now probes the default branch (`origin/HEAD`, else `main`), and says which ref it used when the probe fails.
+  - **A same-named repo at the root path was probed without question.** `~/dev/template-commit-reveal` belonging to something else was used to identify the family, so the entire reconstruction was of a different tree, reported with full confidence; the only hint was the root's own `skipped, exists with a different origin` line, buried underneath everything it had got wrong. `clone` now refuses up front, naming both origins.
+  - **A directory nested inside a checkout was treated as a clone of the enclosing repo.** `--is-inside-work-tree` is true for any directory under a repo, so an empty `template-x/` inside one was read as an existing clone: its enclosing repo's `origin` was inspected and, with no origin to disagree with, a `stem` remote would be wired into the enclosing repo. Path checks now use a new `isRepoRoot`, which compares `rev-parse --show-toplevel` against the path itself.
+
+  Also in `clone`: `owner/..` parses as a repo name and resolved to the parent of `--dir`, now rejected; an existing root clone with no `origin` no longer silently selects https (which defeats the private-member argument that makes ssh the default); and `origin/<branch>` is read as `refs/remotes/origin/<branch>` rather than as a DWIM rev that a legal local branch named `origin/<branch>` would win. A branch name from a third-party config that begins with `-` is rejected rather than passed to argv.
+
+  The per-repo branch lines of the report moved out of the CLI into `formatBranchLines` in `report.ts`, pure and exported. That seam was untested, and a dry run was announcing branches it would create in repos the same report had just said it would leave untouched, which is the "dry run contradicts the real run" failure the branch work exists to remove, reintroduced in the reporter.
+
+- de6667a: A node whose branch does not exist locally is now an error that names the branch, instead of a conflict in zero files.
+
+  `git merge-tree --write-tree` exits 1 for two unrelated things: "merge completed, conflicts present", and "not something we can merge". The dry-run fast path read every exit 1 as the first, so a node at a branch that only exists as a remote-tracking ref reported
+
+  ```
+  ✗ template-commit-reveal@with/pixi-js  CONFLICT — conflict in 0 file(s) merging main
+  ```
+
+  A zero-file conflict looks enough like a real merge result to send a diagnosis the wrong way, and it did: it was the visible symptom of `clone` not creating the branches its configs name, and it pointed at the merge rather than at the clone.
+
+  Two things were wrong and both are fixed:
+
+  - **The dry run contradicted the real run.** A real run reached `openWorkspace` and said the branch does not exist; only `--dry-run` and `status` claimed a conflict. Since the entire purpose of those two is to predict a real run, the branch check now happens once, before either path, so they cannot disagree. The message says which branch is missing, whether origin has it, and how to create it:
+
+    ```
+    ! template-commit-reveal@with/pixi-js error — no local branch `with/pixi-js` (named in
+      offshoot:fanout.config.json), though `origin/with/pixi-js` exists. A remote-tracking
+      ref cannot be merged into. Create it with `git branch --track with/pixi-js
+      origin/with/pixi-js`, or re-run `offshoot-fanout clone`, which materialises every
+      branch a config names
+    ```
+
+  - **Exit 1 is no longer assumed to mean "conflict".** git prints the merged tree's OID as the first line of stdout for a conflict and nothing at all for a failure, and a real conflict always names at least one file, so the OID is the discriminator, exactly as the success path already required. Anything else falls back to the worktree path, which produces a real error rather than inventing a merge result.
+
+  Also fixed in the test harness: `setRemote` removed and re-added the remote, which deletes its remote-tracking refs, so re-pointing `origin` on a freshly cloned fixture silently discarded every `refs/remotes/origin/*` the clone had just fetched. It now uses `set-url` when the remote exists, which makes cloned fixtures actually resemble a clone.
+
 ## 0.5.1
 
 ### Patch Changes
