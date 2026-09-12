@@ -11,6 +11,16 @@
  * missing rather than guessed, because guessing it is precisely what produced
  * an inverted three-repo chain when it was measured.
  *
+ * The clone is then made RUNNABLE, which is the difference between objects on a
+ * disk and a tree. `git clone` leaves one local branch, so a tree whose repos
+ * declare `with/pixi-js` or `website` comes back unable to run the tool's own
+ * primary verb: measured on the real tree, `offshoot-fanout --dry-run` in a
+ * fresh clone reported `CONFLICT — conflict in 0 file(s)` for every declared
+ * branch. So every branch the repo's OWN config names is materialised from
+ * origin, using the `branches` object this file has already parsed to find the
+ * edges. (The cascade no longer mislabels an absent branch as a conflict
+ * either; it names the branch and how to create it. Both halves were wrong.)
+ *
  * A repo with no `stem` field is DISCARDED, not adopted. That makes the field
  * the opt-in marker for "this repo is maintained as part of the tree", which is
  * what separates a real member from an old experiment or someone else's copy
@@ -22,7 +32,15 @@ import os from 'node:os';
 import path from 'node:path';
 import {CONFIG_FILE, DEFAULT_CONFIG_BRANCH} from './config.js';
 import type {FanoutConfig} from './config.js';
-import {addOrSetRemote, getRemoteUrl, git, isGitRepo} from './git.js';
+import {
+	addOrSetRemote,
+	getRemoteUrl,
+	git,
+	isRepoRoot,
+	listWorktrees,
+	refExists,
+	refSha,
+} from './git.js';
 import {
 	searchReposByCommit,
 	fetchFileFromBranch,
@@ -59,6 +77,34 @@ export interface TreeMember {
 	stem: string | null;
 	/** Why it was discarded, when it was. */
 	reason: string | null;
+	/**
+	 * Branches the repo's own config names, in declaration order. These are the
+	 * nodes it will participate with, so they are exactly what a clone has to
+	 * materialise to be runnable. Empty when the config declares no `branches`,
+	 * which means the repo is a single node at `main` and a plain clone suffices.
+	 */
+	branches: string[];
+}
+
+export type BranchAction =
+	/** A local tracking branch was created from origin. */
+	| 'created'
+	/** Already present locally; never moved. */
+	| 'existing'
+	/**
+	 * Fast-forwarded to origin. Only ever the CONFIG branch, which holds no work
+	 * and whose staleness silently changes which nodes exist.
+	 */
+	| 'updated'
+	/** The config names it, origin does not have it. */
+	| 'missing'
+	/** git refused to create it, or the name is not usable. */
+	| 'failed';
+
+export interface BranchOutcome {
+	branch: string;
+	action: BranchAction;
+	message: string | null;
 }
 
 export type CloneAction = 'cloned' | 'existing' | 'skipped' | 'failed';
@@ -70,6 +116,12 @@ export interface CloneOutcome {
 	/** What the `stem` remote was set to, when it was set. */
 	wired: string | null;
 	message: string | null;
+	/**
+	 * One entry per branch the config names, plus the config branch when origin
+	 * has it. Empty when materialising was turned off, when the repo was skipped,
+	 * or in a dry run against a repo that is not on disk yet (nothing to read).
+	 */
+	branches: BranchOutcome[];
 }
 
 export interface CloneTreeOptions {
@@ -81,6 +133,12 @@ export interface CloneTreeOptions {
 	remote?: string;
 	/** ssh or https clone URLs. Default: inferred from the root, else https. */
 	protocol?: StemProtocol;
+	/**
+	 * Create a local tracking branch for every branch each repo's config names.
+	 * Default: true, because a tree that cannot run `fanout` is broken rather
+	 * than minimal. Set false for objects-and-remotes only.
+	 */
+	branches?: boolean;
 	/** Discover and report, clone nothing, wire nothing. */
 	dryRun?: boolean;
 	/**
@@ -114,11 +172,32 @@ export interface CloneTreeResult {
 	auth: TokenSource;
 }
 
-/** The oldest commits of a repo: the probe that finds every descendant. */
-export function rootCommitsOf(repoPath: string): string[] {
-	const r = git(['rev-list', '--max-parents=0', 'HEAD'], repoPath);
+/**
+ * The oldest commits of a repo: the probe that finds every descendant.
+ *
+ * `ref` defaults to HEAD but should almost never be left to: the family is
+ * defined by the DEFAULT branch, and a maintainer of a tree like this one keeps
+ * orphan branches (`tooling`, the config branch) that have a different root
+ * commit entirely. Probed from a checkout sitting on one of those, the host
+ * search finds only repos carrying the orphan's hash and reports a one-repo
+ * family with complete confidence. See `defaultRefOf`.
+ */
+export function rootCommitsOf(repoPath: string, ref = 'HEAD'): string[] {
+	const r = git(['rev-list', '--max-parents=0', ref], repoPath);
 	if (!r.ok) return [];
 	return r.stdout.trim().split('\n').filter(Boolean);
+}
+
+/** The default branch, preferred over whatever happens to be checked out. */
+function defaultRefOf(repoPath: string): string {
+	for (const ref of [
+		'refs/remotes/origin/HEAD',
+		'refs/heads/main',
+		'refs/remotes/origin/main',
+	]) {
+		if (refExists(repoPath, ref)) return ref;
+	}
+	return 'HEAD';
 }
 
 function parseConfigText(text: string): FanoutConfig | null {
@@ -127,6 +206,24 @@ function parseConfigText(text: string): FanoutConfig | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * The branch names a config declares, in declaration order.
+ *
+ * Defensive because this parse is a bare `JSON.parse` on text fetched from the
+ * host rather than the validated read `resolveConfig` does locally: a malformed
+ * `branches` must cost this repo its branch list, not the whole reconstruction.
+ */
+function branchNamesOf(config: FanoutConfig): string[] {
+	const branches: unknown = config.branches;
+	if (
+		branches === null ||
+		typeof branches !== 'object' ||
+		Array.isArray(branches)
+	)
+		return [];
+	return Object.keys(branches).filter((name) => name.length > 0);
 }
 
 /** Reads one repo's raw config text off its config branch, or null if absent. */
@@ -156,12 +253,15 @@ export async function classifyMembers(
 	for (const fullName of [...all].sort()) {
 		const isRoot = fullName.toLowerCase() === rootFullName.toLowerCase();
 		const name = fullName.split('/').pop()!;
+		// Filled once the config parses. A member discarded before that point has
+		// no branch list, which is right: it is not going to be cloned.
+		let branches: string[] = [];
 		const push = (
 			status: MemberStatus,
 			stem: string | null,
 			reason: string | null,
 		): void => {
-			members.push({fullName, name, status, stem, reason});
+			members.push({fullName, name, status, stem, reason, branches});
 		};
 
 		let text: string | null;
@@ -192,6 +292,9 @@ export async function classifyMembers(
 			);
 			continue;
 		}
+		// `.branches` is already in the object just parsed to find the edge, so
+		// materialising branches costs no extra read of anything.
+		branches = branchNamesOf(config);
 
 		if (!('stem' in config)) {
 			push(
@@ -242,6 +345,162 @@ export async function classifyMembers(
 }
 
 /**
+ * Give a clone the local branches its config names, so `fanout` can run on it.
+ *
+ * `git clone` creates ONE local branch. Every other branch is a remote-tracking
+ * ref, which the cascade can neither check out nor merge into, so every node
+ * but one fails on a tree with nothing wrong with it.
+ *
+ * The rules, each of them the conservative side of the choice:
+ *
+ *   - A branch the config names that origin does NOT have is REPORTED, never
+ *     silently dropped. The tree comes back visibly thin instead of invisibly
+ *     thin, which is the same instinct as an unmatched `stemBranch` (`nodes.ts`)
+ *     and a `stem` pointing outside the discovered set. `fresh` says whether
+ *     origin's refs were actually refreshed first; when they were not, the
+ *     report says so rather than asserting a fact about origin nobody checked.
+ *   - An existing local branch is left exactly where it is. Re-running this on a
+ *     machine with work in progress must not move a ref, so the non-clobber rule
+ *     is the one already applied to a `stem` remote pointing somewhere else.
+ *   - The CONFIG branch is the single exception to that, and only by
+ *     fast-forward. It is never checked out and holds no work, while its
+ *     staleness is invisible and changes which nodes exist at all: a machine
+ *     that cloned in March and re-runs this in September would otherwise keep
+ *     fanning out March's branch set, because a local `offshoot` outranks
+ *     `origin/offshoot` in `resolveConfig`. Divergence is reported, not resolved.
+ *   - The config branch is materialised in the first place because without it a
+ *     fresh clone has no local `offshoot`, and `config stem` then starts a
+ *     SECOND, parentless config history and prints a push origin rejects.
+ *
+ * What is deliberately NOT materialised: any branch no config names. `branches`
+ * exists to keep scratch branches out of the cascade without naming them, so a
+ * scratch or orphan branch stays a remote-tracking ref. Reconstructing one would
+ * mean inventing an edge no config states, which is the thing this file refuses
+ * to do everywhere else. Fetch it yourself: `git fetch origin <branch>:<branch>`.
+ */
+export function materializeBranches(
+	repoDir: string,
+	declared: string[],
+	opts: {
+		configBranch?: string;
+		dryRun?: boolean;
+		/**
+		 * Origin's remote-tracking refs are known current (this run cloned or
+		 * fetched the repo). Without it, `missing` is a statement about a local
+		 * cache, not about origin, and says so.
+		 */
+		fresh?: boolean;
+	} = {},
+): BranchOutcome[] {
+	const out: BranchOutcome[] = [];
+	const seen = new Set<string>();
+	const checkedOut = new Set(
+		listWorktrees(repoDir)
+			.map((w) => w.branch)
+			.filter((b): b is string => b !== null),
+	);
+
+	const track = (branch: string, isConfigBranch: boolean): void => {
+		if (seen.has(branch)) return;
+		seen.add(branch);
+		const push = (
+			action: BranchAction,
+			message: string | null = null,
+		): void => {
+			out.push({branch, action, message});
+		};
+
+		// The name came from JSON on someone else's config branch and is about to
+		// reach argv, where a leading `-` is an option rather than a name. git's own
+		// validation cannot be reached without passing it first.
+		if (branch.startsWith('-')) {
+			push(
+				'failed',
+				'branch name starts with `-`, which git reads as an option',
+			);
+			return;
+		}
+
+		// FULLY QUALIFIED on purpose: `origin/x` as a rev is a DWIM lookup, and a
+		// local branch literally named `origin/x` (legal) would win it.
+		const remote = refSha(repoDir, `refs/remotes/origin/${branch}`);
+		const local = refSha(repoDir, `refs/heads/${branch}`);
+
+		if (local !== null) {
+			if (!isConfigBranch || remote === null || local === remote) {
+				push('existing');
+				return;
+			}
+			if (checkedOut.has(branch)) {
+				push(
+					'existing',
+					`differs from origin/${branch}, and is checked out; left alone`,
+				);
+				return;
+			}
+			const behind = git(
+				['merge-base', '--is-ancestor', local, remote],
+				repoDir,
+			).ok;
+			if (!behind) {
+				// Ahead is the normal state right after `config stem`; diverged is not.
+				const ahead = git(
+					['merge-base', '--is-ancestor', remote, local],
+					repoDir,
+				).ok;
+				push(
+					'existing',
+					ahead
+						? null
+						: `has diverged from origin/${branch}; left alone, so the config read here may not be the published one`,
+				);
+				return;
+			}
+			if (opts.dryRun) {
+				push('updated');
+				return;
+			}
+			// `update-ref <ref> <new> <old>` is compare-and-swap: it refuses if the
+			// ref moved since it was read, so this cannot race a concurrent write.
+			const r = git(
+				['update-ref', `refs/heads/${branch}`, remote, local],
+				repoDir,
+			);
+			if (r.ok) push('updated');
+			else push('failed', r.stderr.trim() || r.stdout.trim());
+			return;
+		}
+
+		if (remote === null) {
+			// The config branch simply is not there for a repo that has no config,
+			// which is a supported state rather than a finding.
+			if (isConfigBranch) return;
+			push(
+				'missing',
+				opts.fresh
+					? `named in ${CONFIG_FILE} but absent from origin: this node cannot be merged`
+					: `named in ${CONFIG_FILE} and not among this clone's \`origin/*\` refs, which this run did not refresh. Run \`git fetch origin\` first if the branch was pushed recently`,
+			);
+			return;
+		}
+		if (opts.dryRun) {
+			push('created');
+			return;
+		}
+		const r = git(
+			['branch', '--track', branch, `refs/remotes/origin/${branch}`],
+			repoDir,
+		);
+		if (r.ok) push('created');
+		else push('failed', r.stderr.trim() || r.stdout.trim());
+	};
+
+	for (const branch of declared) track(branch, false);
+	if (opts.configBranch) track(opts.configBranch, true);
+	return out;
+}
+
+/**
  * Clone every repo of the tree rooted at `rootSpec` and wire its `stem` remote.
  *
  * Idempotent: an existing clone with the right `origin` is left alone and only
@@ -254,6 +513,7 @@ export async function cloneTree(
 	const dir = path.resolve(opts.dir ?? process.cwd());
 	const configBranch = opts.configBranch ?? DEFAULT_CONFIG_BRANCH;
 	const remoteName = opts.remote ?? 'stem';
+	const wantBranches = opts.branches !== false;
 	const say = opts.onProgress ?? (() => {});
 
 	// Resolve the credential ONCE, up front: it decides whether private members
@@ -271,21 +531,48 @@ export async function cloneTree(
 	};
 	if (auth.source === 'gh') say('authenticated with the `gh` CLI');
 	const root = parseStem(rootSpec);
+	// `owner/..` parses, and would put the "clone" at the PARENT of --dir, where
+	// `isRepoRoot` then asks questions of whatever repo lives there.
+	if (root.name === '.' || root.name === '..') {
+		throw new Error(`\`${rootSpec}\` does not name a repository`);
+	}
 
 	fs.mkdirSync(dir, {recursive: true});
 
 	// 1. The root has to exist locally, because only a real repo can tell us the
 	//    family's root commit. Everything else follows from that hash.
 	const rootDir = path.join(dir, root.name);
+	// The whole reconstruction hangs off this one directory's history, so it has
+	// to be the RIGHT repo. Left unchecked, a same-named repo of another project
+	// sitting at that path is probed instead, and the tool then reports a
+	// different family's tree with complete confidence. The only hint is the
+	// root's own `skipped, exists with a different origin` line, buried under
+	// everything it got wrong.
+	if (isRepoRoot(rootDir)) {
+		const existingOrigin = getRemoteUrl(rootDir, 'origin');
+		if (existingOrigin && !sameRepo(existingOrigin, stemUrl(root, 'https'))) {
+			throw new Error(
+				`${rootDir} already exists and its \`origin\` is ${existingOrigin}, not ${root.id}. ` +
+					'Its history would be used to identify the family, so this would rebuild the wrong tree. ' +
+					'Move it aside, or pass --dir somewhere else.',
+			);
+		}
+	}
 	// Match the protocol already in use, in order of how strongly each source
 	// knows: an existing root clone, then a spec written as a URL, then whatever
 	// `gh` says the user does for git operations (ssh unless told otherwise).
 	// A tree half in ssh and half in https still works, but it reads like two.
 	const specIsUrl = rootSpec.includes('://') || rootSpec.startsWith('git@');
+	const rootOrigin = isRepoRoot(rootDir)
+		? getRemoteUrl(rootDir, 'origin')
+		: null;
 	const protocol: StemProtocol =
 		opts.protocol ??
-		(isGitRepo(rootDir)
-			? protocolOf(getRemoteUrl(rootDir, 'origin'))
+		// `protocolOf(null)` is https, so an existing root with NO origin would
+		// silently pick https and defeat the private-member argument below. Only let
+		// the existing clone decide when it actually has a URL to decide with.
+		(rootOrigin
+			? protocolOf(rootOrigin)
 			: specIsUrl
 				? protocolOf(rootSpec)
 				: preferredProtocol(root.host));
@@ -301,7 +588,7 @@ export async function cloneTree(
 	// loop reaches it, and reporting "existing" for a repo this command just
 	// created reads as "nothing happened".
 	let clonedRoot = false;
-	if (!isGitRepo(rootDir)) {
+	if (!isRepoRoot(rootDir)) {
 		if (opts.dryRun) {
 			temporary = fs.mkdtempSync(
 				path.join(os.tmpdir(), 'offshoot-fanout-probe-'),
@@ -329,10 +616,18 @@ export async function cloneTree(
 		}
 	}
 
-	const rootCommits = rootCommitsOf(probeDir);
+	// From the DEFAULT branch, never from HEAD: a maintainer of a tree like this
+	// keeps orphan branches (the config branch, a `tooling` branch), and probed
+	// with one of those checked out the search matches only repos carrying the
+	// orphan's root commit and reports a one-repo family as if it were the tree.
+	const probeRef = defaultRefOf(probeDir);
+	const rootCommits = rootCommitsOf(probeDir, probeRef);
 	if (temporary) fs.rmSync(temporary, {recursive: true, force: true});
 	if (rootCommits.length === 0) {
-		throw new Error(`could not read the root commit of ${probeDir}`);
+		throw new Error(
+			`could not read the root commit of ${probeDir} at \`${probeRef}\`: ` +
+				`${git(['rev-list', '--max-parents=0', probeRef], probeDir).stderr.trim() || 'no commits'}`,
+		);
 	}
 
 	// 2. Membership from the host: every repo whose default branch carries one
@@ -390,7 +685,7 @@ export async function cloneTree(
 		let action: CloneAction;
 		let message: string | null = null;
 
-		if (isGitRepo(target)) {
+		if (isRepoRoot(target)) {
 			const origin = getRemoteUrl(target, 'origin');
 			if (m.status === 'root' && clonedRoot) {
 				outcomes.push({
@@ -399,6 +694,12 @@ export async function cloneTree(
 					action: 'cloned',
 					wired: null,
 					message: null,
+					branches: wantBranches
+						? materializeBranches(target, m.branches, {
+								configBranch,
+								fresh: true,
+							})
+						: [],
 				});
 				continue;
 			}
@@ -409,6 +710,7 @@ export async function cloneTree(
 					action: 'skipped',
 					wired: null,
 					message: `${target} exists with a different origin (${origin}); left untouched`,
+					branches: [],
 				});
 				continue;
 			}
@@ -420,6 +722,7 @@ export async function cloneTree(
 				action: 'skipped',
 				wired: null,
 				message: `${target} exists and is not a git repo; left untouched`,
+				branches: [],
 			});
 			continue;
 		} else if (opts.dryRun) {
@@ -434,6 +737,7 @@ export async function cloneTree(
 					action: 'failed',
 					wired: null,
 					message: r.stderr.trim(),
+					branches: [],
 				});
 				continue;
 			}
@@ -457,7 +761,36 @@ export async function cloneTree(
 			}
 		}
 
-		outcomes.push({member: m, dir: target, action, wired, message});
+		// An EXISTING clone's `origin/*` refs are as of its last fetch, while the
+		// config that names the branches was read LIVE from the host seconds ago.
+		// Comparing the two without refreshing turns the ordinary "a branch was
+		// pushed and you are re-running this to sync" into `missing` and a non-zero
+		// exit, which is exactly the case the verb advertises. A dry run does not
+		// write, so it skips the fetch and labels its answer as provisional instead.
+		let fresh = action === 'cloned' && !opts.dryRun;
+		if (wantBranches && !fresh && !opts.dryRun && isRepoRoot(target)) {
+			say(`refreshing ${m.fullName}`);
+			const f = git(['fetch', '--quiet', 'origin'], target);
+			if (f.ok) fresh = true;
+			else {
+				const why = `could not refresh \`origin\`: ${(f.stderr || f.stdout).trim()}`;
+				message = message ? `${message}; ${why}` : why;
+			}
+		}
+
+		// A dry run against a repo that is not on disk has nothing to inspect: the
+		// branch list is reported from the config instead (see the CLI), rather than
+		// claiming a creation whose `missing` case could not be checked.
+		const branches =
+			wantBranches && isRepoRoot(target)
+				? materializeBranches(target, m.branches, {
+						configBranch,
+						fresh,
+						...(opts.dryRun ? {dryRun: true} : {}),
+					})
+				: [];
+
+		outcomes.push({member: m, dir: target, action, wired, message, branches});
 	}
 
 	return {

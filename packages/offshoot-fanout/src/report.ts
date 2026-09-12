@@ -1,3 +1,4 @@
+import type {CloneOutcome} from './clone.js';
 import type {
 	DiscoveredEdge,
 	FamilyTree,
@@ -72,6 +73,61 @@ function stripAnsi(s: string): string {
  * be invisible, and an update landing on the wrong branch is exactly the
  * failure this reports away.
  */
+/**
+ * The branch lines under one repo in a `clone` report.
+ *
+ * A function rather than an inline closure in the CLI because this is where a
+ * dry run last claimed it would create branches in a repo the same report had
+ * just said it would leave untouched. That is the exact "dry run contradicts
+ * the real run" failure the branch work exists to remove, reintroduced in the
+ * reporter. Pure and exported so that class of bug is reachable by a test.
+ */
+export function formatBranchLines(
+	outcome: CloneOutcome,
+	opts: {dryRun?: boolean; enabled?: boolean} = {},
+): string[] {
+	const lines: string[] = [];
+	if (opts.enabled === false) return lines;
+	const named = (action: string): string[] =>
+		outcome.branches.filter((b) => b.action === action).map((b) => b.branch);
+
+	const created = named('created');
+	const updated = named('updated');
+
+	if (created.length > 0) {
+		lines.push(
+			`${opts.dryRun ? 'would create' : 'created'} ${created.length} branch(es): ${created.join(', ')}`,
+		);
+	} else if (
+		// Dry run against a repo that is not on disk YET, where nothing could be
+		// read: state the intent from the config rather than assert an outcome.
+		// Gated on `cloned`, because a `skipped` or `failed` repo also has no branch
+		// outcomes and announcing branches for one would be a promise the real run
+		// does not keep.
+		opts.dryRun &&
+		outcome.action === 'cloned' &&
+		outcome.branches.length === 0 &&
+		outcome.member.branches.length > 0
+	) {
+		lines.push(
+			`would create the branch(es) its config names: ${outcome.member.branches.join(', ')}`,
+		);
+	}
+
+	if (updated.length > 0) {
+		lines.push(
+			`${opts.dryRun ? 'would fast-forward' : 'fast-forwarded'} to origin: ${updated.join(', ')}`,
+		);
+	}
+
+	// Every message, not only the fatal ones: a diverged config branch is not an
+	// error but it does change which nodes exist.
+	for (const b of outcome.branches) {
+		if (b.message) lines.push(`! \`${b.branch}\` — ${b.message}`);
+	}
+	return lines;
+}
+
 export function formatReport(
 	root: PropagateResult,
 	{color = true} = {},

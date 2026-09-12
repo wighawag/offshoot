@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
 	addOrSetRemote,
 	allCommits,
+	branchExists,
 	cherryPick,
 	cherryPickAbort,
 	commitSubject,
@@ -18,6 +19,7 @@ import {
 	listWorktrees,
 	mergeAbort,
 	mergeCommitFiles,
+	refExists,
 	refSha,
 	renameRemote,
 	runCommand,
@@ -44,7 +46,7 @@ import {
 	type EdgeKind,
 	type NodeRef,
 } from './nodes.js';
-import {DEFAULT_CONFIG_BRANCH} from './config.js';
+import {CONFIG_FILE, DEFAULT_CONFIG_BRANCH} from './config.js';
 import {closeWorkspace, openWorkspace} from './workspace.js';
 
 export {
@@ -196,6 +198,13 @@ interface MergeSpec {
 	repoPath: string;
 	/** Branch merged INTO. */
 	branch: string;
+	/**
+	 * Where `branch` came from, for error messages only. A node can be named by
+	 * the config, by `--branch`, or by the no-config fallback, and a message that
+	 * blames the config for a branch `--branch` asked for sends the reader to the
+	 * wrong file.
+	 */
+	askedBy: string;
 	/** Stems, merged in declaration order. Exactly one for a cross-repo edge. */
 	sources: MergeSource[];
 	/** Verify command to run after a successful merge, or null. */
@@ -266,6 +275,16 @@ function dryRunOne(
 		return outcome('merged', `would merge ${files.length} file(s)`, files);
 	}
 	if (m.status === 1) {
+		// Exit 1 is AMBIGUOUS: git uses it for "merge completed, conflicts present"
+		// and for "not something we can merge". The two are told apart by stdout,
+		// which begins with the merged tree's OID for a conflict and is EMPTY for a
+		// failure. Reading the second as the first is what reported
+		// `conflict in 0 file(s)` for every node of a perfectly healthy tree whose
+		// clone was simply missing the branches, and a zero-file conflict looks
+		// enough like a merge result to send the diagnosis the wrong way for a
+		// long time. A conflict always names at least one file, so an OID is the
+		// discriminator, exactly as on the success path above.
+		if (!/^[0-9a-f]{40,}$/.test((lines[0] ?? '').trim())) return null;
 		const files: string[] = [];
 		for (const line of lines.slice(1)) {
 			const f = line.trim();
@@ -335,10 +354,51 @@ function dryRunMerge(
 	);
 }
 
+/**
+ * The node's branch must exist as a LOCAL branch before anything else is tried.
+ *
+ * A remote-tracking ref cannot be merged into, and this was left to git to
+ * discover, which it does in two different places with two different answers: a
+ * real run reaches `openWorkspace` and says "branch does not exist", while a dry
+ * run never gets that far and reported a CONFLICT instead. The dry run
+ * contradicting the real run is the worst of the two failures, because `status`
+ * and `--dry-run` exist precisely to be trusted about what a real run will do.
+ */
+function missingBranchOutcome(
+	repoPath: string,
+	branch: string,
+	/** Where the branch name came from, so the message never misattributes it. */
+	asked: string,
+): MergeOutcome | null {
+	if (branchExists(repoPath, branch)) return null;
+	if (refExists(repoPath, `refs/remotes/origin/${branch}`)) {
+		return outcome(
+			'error',
+			`no local branch \`${branch}\` (${asked}), though \`origin/${branch}\` exists. A ` +
+				'remote-tracking ref cannot be merged into. Create it with ' +
+				`\`git branch --track ${branch} origin/${branch}\`, or re-run \`offshoot-fanout clone\`, ` +
+				'which materialises every branch a config names',
+		);
+	}
+	return outcome(
+		'error',
+		`no branch \`${branch}\` (${asked}), and \`origin/${branch}\` does not exist either`,
+	);
+}
+
 async function mergeNode(
 	spec: MergeSpec,
 	opts: {dryRun: boolean; leaveConflicts: boolean},
 ): Promise<MergeOutcome> {
+	// Before the dirty check, because a branch that is not here cannot be dirty,
+	// and before the fetch, because there is nothing to fetch objects for.
+	const missing = missingBranchOutcome(
+		spec.repoPath,
+		spec.branch,
+		spec.askedBy,
+	);
+	if (missing) return missing;
+
 	// A dirty tree blocks its branch in a dry-run too. `status` promising a merge
 	// that a real run then refuses is worse than useless, so this is checked first,
 	// before any fetch, exactly as it was before nodes existed.
@@ -407,6 +467,17 @@ async function mergeNode(
 			}
 			const conflicts = conflictedFiles(ws.dir);
 			mergeAbort(ws.dir);
+			// A failed merge with NO conflicted files is not a conflict, it is a merge
+			// that could not be attempted. The real run one branch down already makes
+			// that distinction; this path did not, and it now carries more traffic,
+			// because `dryRunOne` deliberately falls back here when `merge-tree` exits
+			// 1 for a reason other than a conflict.
+			if (conflicts.length === 0) {
+				return outcome(
+					'error',
+					`merge failed: ${(m.stderr || m.stdout).trim() || 'no conflicted files'}`,
+				);
+			}
 			return outcome(
 				'conflict',
 				`conflict in ${conflicts.length} file(s) (dry-run, aborted)`,
@@ -802,6 +873,11 @@ export async function propagate(
 					{
 						repoPath: node.repo.path,
 						branch: node.branch,
+						askedBy: opts.branch
+							? 'requested with --branch'
+							: plan.config.config?.branches
+								? `named in ${plan.config.ref ?? CONFIG_FILE}`
+								: 'this repo has no config, so its only node is its default branch',
 						sources,
 						verify: opts.verify ? plan.verify : null,
 					},

@@ -8,6 +8,7 @@ import {
 	discoverAncestry,
 	discoverRepos,
 	formatAncestryReport,
+	formatBranchLines,
 	formatDriftReport,
 	formatLinkResults,
 	formatRenameResults,
@@ -139,12 +140,44 @@ Options:
                          else ssh)
   --prefer-https         shorthand for --protocol https
   --require-auth         fail unless a credential is found (see AUTH below)
+  --no-branches          clone and wire only; do not create local branches (see BRANCHES below)
   --dry-run              discover and report; clone nothing, wire nothing
   --no-color             plain text report (no ANSI escapes)
   -h, --help             show this help
 
 Idempotent: an existing clone with the right \`origin\` is kept and only re-wired, so re-running this
 brings a machine back in sync. A \`stem\` remote already pointing somewhere else is never clobbered.
+
+BRANCHES. \`git clone\` leaves ONE local branch, and the cascade cannot merge into a branch that is
+only a remote-tracking ref, so every other node of every repo fails on a tree with nothing wrong
+with it. So every branch a repo's own ${CONFIG_FILE} names is created here as a local tracking
+branch, from the \`branches\` object already parsed to find the tree's edges.
+
+  named + on origin      created as a local tracking branch
+  named + not on origin  REPORTED, and the command exits non-zero
+  already local          left exactly as it is, never moved
+  not named by a config  NOT created; stays a remote-tracking ref
+  the config branch      created, and fast-forwarded to origin on a re-run
+
+The last two are the ones to know. A branch no config names is out of the cascade on purpose (that
+is what \`branches\` is for), so scratch and orphan branches are left alone rather than
+reconstructed, which would invent an edge no config states. Fetch one yourself when you want it:
+\`git fetch origin <branch>:<branch>\`. The config branch is the one exception to "never move a
+branch": it holds no work, it is never checked out, and a stale copy silently changes which nodes
+exist, so it is fast-forwarded (and a DIVERGED one is reported, not resolved).
+
+An existing clone is fetched before any of this, so "not on origin" is a fact rather than a guess
+about a stale ref cache; \`--dry-run\` does not write and says so instead. \`--no-branches\` skips the
+whole thing.
+
+The \`${DEFAULT_REMOTE}\` remote is wired but NOT fetched, because the cascade fetches a cross-repo edge from
+the parent's sibling CLONE on disk, not from that remote. The fetch would cost one full download per
+repo to serve nothing.
+
+EXIT CODE. Non-zero when what came back is not what was asked for: a repo failed to clone, a repo
+was skipped (its directory is taken), a config could not be read, a branch a config names is not
+here, or the host truncated its own search. A missing CREDENTIAL is the one exception: it is loud
+but still zero, because \`--require-auth\` already exists to make that call.
 
 PROTOCOL. ssh by default, because discovery is AUTHENTICATED and cloning must be able to reach
 everything discovery can see: an https clone of a private member fails asking for a username that a
@@ -1024,6 +1057,7 @@ async function runClone(rest: string[]): Promise<number> {
 		protocol: {type: 'string'},
 		'prefer-https': {type: 'boolean', default: false},
 		'require-auth': {type: 'boolean', default: false},
+		'no-branches': {type: 'boolean', default: false},
 		'dry-run': {type: 'boolean', default: false},
 		'no-color': {type: 'boolean', default: false},
 	});
@@ -1047,6 +1081,7 @@ async function runClone(rest: string[]): Promise<number> {
 	}
 
 	const dryRun = values['dry-run'] as boolean;
+	const wantBranches = !(values['no-branches'] as boolean);
 	let result;
 	try {
 		result = await cloneTree(root, {
@@ -1055,6 +1090,7 @@ async function runClone(rest: string[]): Promise<number> {
 			remote: values.remote as string,
 			...(protocol ? {protocol: protocol as 'ssh' | 'https'} : {}),
 			requireAuth: values['require-auth'] as boolean,
+			branches: wantBranches,
 			dryRun,
 			onProgress: (line) => console.log(`  ${line}`),
 		});
@@ -1087,12 +1123,25 @@ async function runClone(rest: string[]): Promise<number> {
 					: 'cloned'
 				: outcome.action
 			: '';
+		const pad = `    ${'  '.repeat(depth)}  `;
 		console.log(
 			`    ${'  '.repeat(depth)}${fullName}${mark ? `  (${mark})` : ''}`,
 		);
 		if (outcome?.message) {
-			console.log(`    ${'  '.repeat(depth)}  ! ${outcome.message}`);
+			console.log(`${pad}! ${outcome.message}`);
 		}
+
+		// Branches are reported per repo rather than in one list at the end: which
+		// repo a branch belongs to is the whole content of the line.
+		if (outcome) {
+			for (const line of formatBranchLines(outcome, {
+				dryRun,
+				enabled: wantBranches,
+			})) {
+				console.log(`${pad}${line}`);
+			}
+		}
+
 		for (const child of byParent.get(fullName.toLowerCase()) ?? []) {
 			walk(child.fullName, depth + 1);
 		}
@@ -1153,8 +1202,47 @@ async function runClone(rest: string[]): Promise<number> {
 		console.log(`\n  authenticated via ${result.auth}`);
 	}
 
-	const failed = result.outcomes.filter((o) => o.action === 'failed');
-	return failed.length > 0 || unreadable.length > 0 ? 1 : 0;
+	const branchProblems = result.outcomes.flatMap((o) =>
+		o.branches
+			.filter((b) => b.action === 'missing' || b.action === 'failed')
+			.map((b) => `${o.member.fullName}: \`${b.branch}\``),
+	);
+	if (branchProblems.length > 0) {
+		console.log(
+			`\n  ! ${branchProblems.length} branch(es) named in a config could not be created, so those nodes`,
+		);
+		console.log('    cannot be merged and the tree is thinner than it claims:');
+		for (const line of branchProblems) console.log(`      ${line}`);
+	}
+
+	// ONE rule for the exit code: non-zero when what came back is not what was
+	// asked for. Applying it only to the cheapest case would be the worse
+	// inconsistency, because a whole repo that was never cloned (a name collision
+	// between two owners, a leftover directory) loses far more than one branch,
+	// and used to exit 0 in silence. `auth === 'none'` is deliberately NOT here:
+	// it has its own opt-in in `--require-auth`, so promoting it would take that
+	// choice away from the caller.
+	const reasons: string[] = [];
+	const count = (n: number, what: string): void => {
+		if (n > 0) reasons.push(`${n} ${what}`);
+	};
+	count(
+		result.outcomes.filter((o) => o.action === 'failed').length,
+		'repo(s) failed to clone',
+	);
+	count(
+		result.outcomes.filter((o) => o.action === 'skipped').length,
+		'repo(s) skipped, so they are not on this machine',
+	);
+	count(unreadable.length, 'config(s) could not be read');
+	count(branchProblems.length, 'branch(es) named by a config are not here');
+	if (result.incomplete) reasons.push('the host truncated its own search');
+
+	if (reasons.length === 0) return 0;
+	console.log(
+		`\n  ! the tree that came back is not the tree that was asked for: ${reasons.join('; ')}.`,
+	);
+	return 1;
 }
 
 function runSkills(rest: string[]): number {

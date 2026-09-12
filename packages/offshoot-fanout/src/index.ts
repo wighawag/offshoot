@@ -82,6 +82,8 @@ export {
 	resolveToken,
 } from './host.js';
 export type {
+	BranchAction,
+	BranchOutcome,
 	CloneAction,
 	CloneOutcome,
 	CloneTreeOptions,
@@ -94,6 +96,7 @@ export {
 	classifyMembers,
 	cloneTree,
 	descendantsOf,
+	materializeBranches,
 	rootCommitsOf,
 } from './clone.js';
 export {
@@ -117,6 +120,7 @@ export type {Workspace} from './workspace.js';
 export type {CommitLog} from './git.js';
 export type {Summary} from './report.js';
 export {
+	formatBranchLines,
 	formatReport,
 	summarize,
 	formatAncestryReport,

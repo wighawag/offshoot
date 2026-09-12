@@ -90,14 +90,28 @@ export function commit(root: string, message: string): void {
 	git(['commit', '--no-verify', '-m', message], root);
 }
 
-/** Set a remote url, replacing it if it already exists. */
+/**
+ * Set a remote url, creating the remote if absent.
+ *
+ * `set-url` rather than remove-then-add, which is what this used to do: removing
+ * a remote also DELETES its remote-tracking refs, so re-pointing `origin` on a
+ * fresh clone silently threw away every `refs/remotes/origin/*` the clone had
+ * just fetched. Harmless for a test that only cares about merges, and a trap for
+ * any test about what a real clone looks like. It cost an afternoon once.
+ *
+ * Consequence worth knowing when writing a fixture: `refs/remotes/origin/*` now
+ * SURVIVES on a cloned fixture, and `resolveConfig` falls back to
+ * `origin/<configBranch>`. So a fixture cloned from a repo that already has a
+ * config branch inherits that config. Write the config branch AFTER the clone,
+ * as every fixture here does, or say explicitly that inheriting it is the point.
+ */
 export function setRemote(root: string, name: string, url: string): void {
-	try {
-		git(['remote', 'remove', name], root);
-	} catch {
-		/* didn't exist */
-	}
-	git(['remote', 'add', name, url], root);
+	const existing = git(['remote'], root)
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	if (existing.includes(name)) git(['remote', 'set-url', name, url], root);
+	else git(['remote', 'add', name, url], root);
 }
 
 export function headOf(root: string): string {

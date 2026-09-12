@@ -263,6 +263,30 @@ A repo that shares the root commit but has **no `stem` field is discarded**, and
 
 Re-running is safe: an existing clone with the right `origin` is kept and only re-wired, and a `stem` remote already pointing elsewhere is never clobbered.
 
+### The clone is runnable, not just present
+
+`git clone` leaves **one** local branch. Everything else is a remote-tracking ref, which the cascade can neither check out nor merge into. Measured on this tree, a fresh clone followed immediately by the tool's own primary verb reported
+
+```
+✗ template-commit-reveal@with/pixi-js  CONFLICT — conflict in 0 file(s) merging main
+⊘ template-commit-reveal@with/all      skipped — parent not updated (conflict)
+⊘ reveal-or-die@main                   skipped — parent not updated (skipped)
+```
+
+with nothing whatsoever wrong with the tree. (That message was itself a second bug, since fixed: `git merge-tree` exits 1 both for a real conflict and for "not something we can merge", so an absent branch was rendered as a zero-file conflict. It now names the branch and how to create it.) So `clone` also creates a local tracking branch for every branch a repo's **own** `fanout.config.json` names, using the `branches` object it has already parsed to find the tree's edges. It creates the config branch too, because without a local `offshoot` the next `config stem` starts a *second*, parentless config history and prints a push command origin rejects.
+
+A named branch that origin does not have is **reported, and the command exits non-zero**. The tree comes back visibly thin rather than invisibly thin. An existing clone is fetched before this comparison, so "not on origin" is a fact and not a claim about a stale ref cache; `--dry-run` writes nothing and labels its answer provisional instead. The config branch is the one branch this will **move**, and only by fast-forward: it holds no work, it is never checked out, and a stale copy silently changes which nodes exist, because a local `offshoot` outranks `origin/offshoot` when the config is read. A diverged one is reported, never resolved. `--no-branches` skips all of it.
+
+The exit code follows one rule: **non-zero when what came back is not what was asked for**. A repo that failed to clone, a repo skipped because its directory was taken, a config that could not be read, a branch a config names that is not here, or a search the host itself truncated. A missing credential is the exception and stays zero, because `--require-auth` already exists to make that call.
+
+What is **not** created: any branch no config names. `branches` exists precisely to keep scratch branches out of the cascade without naming them, so `work`, `old` and `v1` stay remote-tracking refs. `tooling` is the same case and is worth stating because it looks like an exception: it is a maintainer's **local cache** of the stem's orphan tooling branch, deliberately in no config's `branches` and unmergeable by construction, so materialising it would mean inventing an edge no config states. Fetch it when you want it:
+
+```bash
+git fetch stem tooling:tooling
+```
+
+That is also the reason the `stem` remote is wired but **not** fetched: the cascade fetches a cross-repo edge from the parent's sibling **clone**, not from that remote, so a fetch per repo would buy nothing.
+
 You can ask for any node, not just the true root, and get the subtree beneath it. The rest of the family shares the same root commit and so is discovered too, but it is listed rather than cloned:
 
 ```bash

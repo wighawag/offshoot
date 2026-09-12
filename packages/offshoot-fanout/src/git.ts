@@ -100,6 +100,27 @@ export function isGitRepo(cwd: string): boolean {
 	return git(['rev-parse', '--is-inside-work-tree'], cwd).ok;
 }
 
+/**
+ * True if `cwd` is the ROOT of a repository, not merely somewhere inside one.
+ *
+ * `isGitRepo` answers the wrong question for "is there a clone at this path":
+ * an ordinary empty directory nested in a checkout answers yes, and is then
+ * treated as a clone of whatever repo encloses it. That reads the enclosing
+ * repo's `origin` and, if it has none, goes on to wire a `stem` remote into it.
+ */
+export function isRepoRoot(cwd: string): boolean {
+	if (!fs.existsSync(cwd)) return false;
+	const r = git(['rev-parse', '--show-toplevel'], cwd);
+	if (!r.ok) return false;
+	const top = r.stdout.trim();
+	if (top === '') return false;
+	try {
+		return fs.realpathSync(top) === fs.realpathSync(cwd);
+	} catch {
+		return path.resolve(top) === path.resolve(cwd);
+	}
+}
+
 /** The branch HEAD points at, or null when detached. */
 export function currentBranch(cwd: string): string | null {
 	const r = git(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
