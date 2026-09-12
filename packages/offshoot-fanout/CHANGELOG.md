@@ -1,5 +1,21 @@
 # offshoot-fanout
 
+## 0.5.0
+
+### Minor Changes
+
+- 74f5217: Publish the parent REPO in `fanout.config.json`, and add `offshoot-fanout clone` to rebuild a whole tree from it.
+
+  A tree's shape lived only in local `stem` remotes, so it died with the machine holding it: a git host cannot be asked "what descends from this repo", and the saved registry is local state that goes stale and does not travel. The new top-level `stem` field names the parent as `provider:owner/name` (the spelling `.offshoot.json` already uses), with `null` declaring a root, so `offshoot-fanout clone <owner/name>` reconstructs everything from one repo name: the family is found by searching the host for repos containing the root commit, and each repo's own `stem` field supplies the edges.
+
+  Direction is stated rather than inferred, because inferring it does not work. Measured against the real ten-repo tree, deducing edges from shared history got three wrong, including a chain inverted end to end when a descendant happened to carry fewer commits than its ancestor; fanning out on that graph would merge a parent's content up from its own grandchild. So `clone` reports an edge it cannot read instead of guessing one, and a repo that shares the root commit but has no `stem` field is discarded as unannotated. That makes the field the opt-in marker for "maintained as part of this tree", which is what keeps old experiments and strangers' copies out.
+
+  The `stem` REMOTE still wins for merging wherever it exists: it is what git actually fetches, and pointing it at a sibling checkout on disk is how a maintainer works on a tree locally, so a published id must never silently retarget a merge. The config is the portable truth and the fallback for a fresh clone. Absence stays valid indefinitely, which is every tree that exists today. Disagreement between the two is reported by `config show` and `clone` rather than silently resolved, and a local-path remote is compared through its own `origin` first, so a local checkout of the right parent is not mistaken for drift.
+
+  `clone` takes a credential from `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`, so anyone logged into the `gh` CLI gets private members with no setup. That is not a convenience: an unauthenticated commit search cannot see private repos at all and does not say so, which on the tree this was built against means 12 repos found instead of 17. The report names the credential source it used, warns explicitly when it had none, and `--require-auth` makes a missing credential fatal for provisioning scripts, where silently restoring two thirds of a tree is worse than refusing to start.
+
+  `config stem --from-remote` migrates a repo by publishing the edge its `stem` remote already knows, preserving everything else in the config, and `config show` now renders the resolved parent and where it came from (config, remote, both, or a mismatch). The registry keeps its distinct job: filesystem paths and the maintainer-local `ignore` list, neither of which belongs in a published config.
+
 ## 0.4.1
 
 ### Patch Changes
