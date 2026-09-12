@@ -21,6 +21,7 @@ Requires the `git` binary and Node 20+.
 ```
 offshoot-fanout status         one-command triage: what needs doing (wiring, downstream, upstream)
 offshoot-fanout fanout         propagate a change down the hierarchy (default)
+offshoot-fanout clone          rebuild a whole tree on a bare machine, from one repo name
 offshoot-fanout drift          list descendant commits not yet in their parent (candidate backports)
 offshoot-fanout backport       cherry-pick a descendant commit up onto an ancestor (its home), optionally cascade
 offshoot-fanout discover       find repos that share common ancestry; optionally wire remotes; optionally save a registry
@@ -242,7 +243,76 @@ offshoot-fanout discover ./some-folder --save --root ./template-svelte          
 
 `--add-remotes` adds the `stem` remote to unwired repos (pointing at their detected parent's `origin` URL). It needs `--root <repo>` (anchor direction; only that root's subtree is wired) or `--yes` (accept the proposed tree). `--dry-run` shows what would be added without adding. `--save` writes a registry (see below); scoped to one hierarchy with `--root`.
 
+## clone: rebuilding a tree from its host
+
+Given **only** the root repo, clone every repo of its tree and wire each one's `stem` remote:
+
+```bash
+offshoot-fanout clone wighawag/template-svelte --dir ~/dev --dry-run
+offshoot-fanout clone wighawag/template-svelte --dir ~/dev
+```
+
+No registry, no manifest, no local state. It works in two steps, and they answer two different questions:
+
+1. **Who is in the family?** Every descendant contains the family's **root commit**, so one commit search on the host lists them all, including repos under owners you had forgotten. (Commit search only indexes default branches, which is exactly why the root commit is the right probe: it reaches `main` everywhere, while the branch an edge was cut from may not.)
+2. **Who is whose parent?** Each repo's own `stem` field, read straight off its config branch without cloning.
+
+The second step cannot be replaced by the first. Direction is not recoverable from shared history: run the inference against the real ten-repo tree and three of ten edges come out wrong, including `jolly-roger` placed under its own grandchild `reveal-or-die`, because that descendant happens to have fewer commits than its ancestor. A tree assembled that way would fan out backwards. So `clone` uses only stated edges, and reports the ones it cannot read.
+
+A repo that shares the root commit but has **no `stem` field is discarded**, and listed with the reason. That is the second thing the field buys: it marks which repos are actually maintained as part of the tree, so an old experiment, a bug reproduction and a stranger's copy stay out on purpose rather than by luck.
+
+Re-running is safe: an existing clone with the right `origin` is kept and only re-wired, and a `stem` remote already pointing elsewhere is never clobbered.
+
+### Authentication is not optional for a tree with private members
+
+An unauthenticated commit search **cannot see private repos at all, and does not say so**. It returns a smaller answer that looks complete. On the tree this was built against, that is 12 repos found instead of 17.
+
+So a credential is taken from `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` — if you are logged into the `gh` CLI, private members are included with no setup at all. The report always names the source it used, and says loudly when it had none:
+
+```bash
+offshoot-fanout clone wighawag/template-svelte --dry-run
+#   authenticated via gh
+
+offshoot-fanout clone wighawag/template-svelte --require-auth   # missing credential is fatal
+```
+
+Use `--require-auth` in provisioning scripts. A machine that silently restores two thirds of a tree is worse than one that refuses to start.
+
+## Publishing the parent: the `stem` field
+
+```json
+{
+  "stem": "github:wighawag/template-svelte-tailwind",
+  "branches": {"main": {}, "with/all": {"stem": "main"}}
+}
+```
+
+Top-level `stem` is the parent **repo**; `branches.<name>.stem` is a branch in **this** repo. `null` declares this repo the root of its tree, which is not the same as saying nothing.
+
+It is `provider:owner/name`, not a URL, so the same tree cloned over ssh on one machine and https on another still describes one relationship. (A URL is still accepted, and required for a self-hosted host.) This is the spelling `.offshoot.json` already uses for the non-fork flow, so both halves of the tool name a parent the same way.
+
+**The `stem` remote still wins for merging.** It is what git actually fetches, and pointing it at a sibling checkout on disk is the normal way to work on a tree locally, so a published id must never silently retarget a merge. The config is the portable truth and the fallback when no remote exists. Absence stays valid indefinitely.
+
+When the two disagree it is **reported, never silently resolved** — a local-path remote is compared through its own `origin` first, so a local checkout of the right parent is not mistaken for drift:
+
+```bash
+offshoot-fanout config show --repo ./jolly-roger
+#   parent repo:
+#     github:wighawag/template-svelte-shadcn  (config; `stem` remote agrees)
+```
+
+Migrate a tree whose edges exist only on one machine by publishing what each `stem` remote already knows:
+
+```bash
+for repo in */; do offshoot-fanout config stem --from-remote --repo "$repo"; done
+offshoot-fanout config stem --root --repo ./template-svelte   # the top of the tree
+# then push each config branch:
+git -C ./jolly-roger push origin offshoot
+```
+
 ## Registry
+
+The registry is **local** state and stays that way: filesystem paths and your `ignore` list, neither of which belongs in a config other people read. Topology now comes from the `stem` field.
 
 `discover --save` persists each **wired** hierarchy (defined by the real `stem` remotes, not shared commits) to `~/.offshoot-stems/<root>.json`, one file per hierarchy, so several independent trees coexist. Each entry records the repo's `originUrl`, its current `stemUrl` (null = unwired), and its real `stem` parent; an optional `ignore: []` array carries the maintainer-local exclusions. The other commands then take `--registry <file>` to operate off the saved tree instead of scanning:
 

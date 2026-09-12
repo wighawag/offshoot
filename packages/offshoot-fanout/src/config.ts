@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {git, gitWithInput, refExists, refSha, showFile} from './git.js';
+import {parseStem} from './stem.js';
 
 /**
  * Default config branch. Flat on purpose: git cannot hold both a branch named
@@ -69,6 +70,25 @@ export interface BranchConfig {
 
 export interface FanoutConfig {
 	/**
+	 * The PARENT REPOSITORY, as `provider:owner/name` (or a URL on a self-hosted
+	 * host). `null` declares this repo the ROOT of its tree.
+	 *
+	 * This is the one relationship the tool could not see: the parent lived only
+	 * in a local git remote, so a tree's shape died with the machine holding it.
+	 * With it, enumerating a family (every member carries the root commit, which
+	 * a host's commit search can find) and reading each member's config yields
+	 * the exact graph, with no local state and no inference.
+	 *
+	 * Three distinct states, all meaningful:
+	 *   absent      -> not annotated. Valid forever: every existing tree is this.
+	 *   "a/b"       -> parent stated.
+	 *   null        -> stated to BE the root, which is not the same as unknown.
+	 *
+	 * The `stem` REMOTE still wins for merging when it is present; see
+	 * `resolveParent`. This field is the portable truth, not the merge input.
+	 */
+	stem?: string | null;
+	/**
 	 * Opt-in branch set. When present, ONLY the listed branches participate.
 	 * That is what keeps scratch branches out of the cascade without naming them.
 	 */
@@ -112,6 +132,28 @@ function validate(raw: unknown): FanoutConfig {
 	}
 	const obj = raw as Record<string, unknown>;
 	const config: FanoutConfig = {};
+
+	if ('stem' in obj) {
+		const stem = obj.stem;
+		if (stem === null) {
+			// Explicitly the root. Distinct from absent, which means "nobody said".
+			config.stem = null;
+		} else if (typeof stem !== 'string') {
+			throw new Error(
+				'`stem` must be a string (`provider:owner/name`) or null (this repo is the root)',
+			);
+		} else {
+			// Parse for validity, but store the canonical id, so every reader sees
+			// one spelling regardless of how it was written.
+			try {
+				config.stem = parseStem(stem).id;
+			} catch (e) {
+				throw new Error(
+					`\`stem\` is invalid: ${e instanceof Error ? e.message : String(e)}`,
+				);
+			}
+		}
+	}
 
 	if (obj.branches !== undefined) {
 		const branches = obj.branches;
@@ -305,6 +347,8 @@ export function writeConfig(
 		);
 	}
 
+	// Hash the FILE, not a re-serialization of the parsed object: unknown keys
+	// written by a newer version survive an older binary's `config set`.
 	const blob = git(['hash-object', '-w', '--', abs], repoPath);
 	if (!blob.ok) return fail(`hash-object failed: ${blob.stderr.trim()}`);
 	const blobSha = blob.stdout.trim();
@@ -343,5 +387,115 @@ export function writeConfig(
 		message: created
 			? `created orphan branch \`${branch}\` with ${CONFIG_FILE} (${commitSha.slice(0, 8)})`
 			: `updated \`${branch}\`:${CONFIG_FILE} (${commitSha.slice(0, 8)})`,
+	};
+}
+
+/**
+ * Stable serialization: `stem` first (it identifies the repo's place in the
+ * tree), then `branches`, then `verify`. This file is read by humans and
+ * diffed by review, so key order is not allowed to wander.
+ */
+export function serializeConfig(config: FanoutConfig): string {
+	const ordered: Record<string, unknown> = {};
+	if ('stem' in config) ordered.stem = config.stem ?? null;
+	if (config.branches !== undefined) ordered.branches = config.branches;
+	if (config.verify !== undefined) ordered.verify = config.verify;
+	return `${JSON.stringify(ordered, null, 2)}\n`;
+}
+
+/**
+ * Record this repo's parent on its config branch, PRESERVING everything else
+ * that is already there.
+ *
+ * This is the migration path: a tree whose edges exist only as local `stem`
+ * remotes is one command per repo away from being reconstructible by anyone,
+ * and the remotes it reads are on the machine that is about to be wiped.
+ * Passing `null` declares the repo a root.
+ */
+export function setStem(
+	repoPath: string,
+	stem: string | null,
+	opts: WriteConfigOptions = {},
+): WriteConfigResult {
+	const branch = opts.branch ?? DEFAULT_CONFIG_BRANCH;
+	const ref = `refs/heads/${branch}`;
+	const fail = (message: string): WriteConfigResult => ({
+		ok: false,
+		branch,
+		commit: null,
+		created: false,
+		message,
+	});
+
+	const existing = resolveConfig(repoPath, {branch});
+	if (existing.source === 'error')
+		return fail(existing.error ?? 'unreadable config');
+
+	const next: FanoutConfig = {...(existing.config ?? {}), stem};
+	let text: string;
+	try {
+		// Round-trip through validation so an invalid stem fails before anything
+		// is written, with the same message a reader would produce.
+		text = serializeConfig(
+			validate(JSON.parse(serializeConfig(next)) as unknown),
+		);
+	} catch (e) {
+		return fail(
+			`refusing to write an invalid config: ${
+				e instanceof Error ? e.message : String(e)
+			}`,
+		);
+	}
+
+	const before = existing.config ?? null;
+	if (
+		before &&
+		'stem' in before &&
+		before.stem === (stem === null ? null : next.stem)
+	) {
+		return {
+			ok: true,
+			branch,
+			commit: null,
+			created: false,
+			message: `already records stem ${stem === null ? '(root)' : `\`${next.stem}\``}; nothing to do`,
+		};
+	}
+
+	const blob = gitWithInput(['hash-object', '-w', '--stdin'], repoPath, text);
+	if (!blob.ok) return fail(`hash-object failed: ${blob.stderr.trim()}`);
+	const tree = gitWithInput(
+		['mktree'],
+		repoPath,
+		`100644 blob ${blob.stdout.trim()}\t${CONFIG_FILE}\n`,
+	);
+	if (!tree.ok) return fail(`mktree failed: ${tree.stderr.trim()}`);
+
+	const parent = refSha(repoPath, ref);
+	const created = parent === null;
+	const args = ['commit-tree', tree.stdout.trim()];
+	if (parent) args.push('-p', parent);
+	args.push(
+		'-m',
+		opts.message ??
+			`offshoot-fanout: record stem ${stem === null ? '(root)' : next.stem}`,
+	);
+	const commit = git(args, repoPath);
+	if (!commit.ok) return fail(`commit-tree failed: ${commit.stderr.trim()}`);
+	const commitSha = commit.stdout.trim();
+
+	const update = parent
+		? git(['update-ref', ref, commitSha, parent], repoPath)
+		: git(['update-ref', ref, commitSha], repoPath);
+	if (!update.ok) return fail(`update-ref failed: ${update.stderr.trim()}`);
+
+	return {
+		ok: true,
+		branch,
+		commit: commitSha,
+		created,
+		message: `${created ? 'created' : 'updated'} \`${branch}\`:${CONFIG_FILE} with stem ${
+			stem === null ? '(root)' : `\`${next.stem}\``
+		} (${commitSha.slice(0, 8)})`,
 	};
 }

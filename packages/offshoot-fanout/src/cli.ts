@@ -24,7 +24,13 @@ import {
 	statusTree,
 	formatStatusReport,
 	planRepo,
+	comparableRemote,
+	parseStem,
+	repoFromPath,
 	resolveConfig,
+	resolveParent,
+	setStem,
+	cloneTree,
 	writeConfig,
 } from './index.js';
 import {
@@ -37,6 +43,7 @@ import type {PropagateResult, Repo} from './index.js';
 
 const SUBCOMMANDS = new Set([
 	'fanout',
+	'clone',
 	'discover',
 	'link',
 	'rename-remote',
@@ -104,6 +111,45 @@ Options:
   -h, --help             show this help
 
 Linked worktrees (\`git worktree add\`) are never listed: they are the same repository as their parent.
+`;
+
+const CLONE_USAGE = `offshoot-fanout clone — rebuild a whole tree on a bare machine, from one repo name
+
+Usage:
+  offshoot-fanout clone <owner/name> [options]
+
+Given ONLY the root repo, clones every repo of its tree and wires each one's \`stem\` remote. No
+registry, no manifest, no local state: the tree comes back on a machine that has never seen it.
+
+How it finds them: every descendant contains the family's ROOT COMMIT, so the host's commit search
+lists the whole family from that one hash (it finds repos under other owners too). Then each repo's
+own \`stem\` field, read straight off its config branch without cloning, gives the parent/child
+edges. Direction is never inferred from history — measured on a real tree, inference got 3 of 10
+edges wrong and inverted a whole chain — so an edge that is not stated is reported, not guessed.
+
+A repo that shares the root commit but has NO \`stem\` field is DISCARDED and listed as unannotated.
+That is what the field buys beyond reconstruction: it marks which repos are actually maintained as
+part of the tree, so old experiments and other people's copies stay out.
+
+Options:
+  --dir <path>           where clones land (default: cwd)
+  --remote <name>        remote to wire on each clone (default: ${DEFAULT_REMOTE})
+  --config-branch <name> branch holding each repo's ${CONFIG_FILE} (default: ${DEFAULT_CONFIG_BRANCH})
+  --protocol <ssh|https> clone URL style (default: match the root clone, else https)
+  --require-auth         fail unless a credential is found (see AUTH below)
+  --dry-run              discover and report; clone nothing, wire nothing
+  --no-color             plain text report (no ANSI escapes)
+  -h, --help             show this help
+
+Idempotent: an existing clone with the right \`origin\` is kept and only re-wired, so re-running this
+brings a machine back in sync. A \`stem\` remote already pointing somewhere else is never clobbered.
+
+AUTH. A credential is taken from GITHUB_TOKEN, then GH_TOKEN, then \`gh auth token\` — so if you are
+logged into the \`gh\` CLI, private members are included with no setup. This is not a nicety: an
+unauthenticated commit search cannot see private repos AT ALL and does not say so, it just returns
+a smaller answer. On a real tree that is 12 repos instead of 17. \`--require-auth\` turns a missing
+credential into a hard failure, which is what a tree with private members wants in a provisioning
+script. A token also raises the search rate limit (~30 req/min vs ~10).
 `;
 
 const LINK_USAGE = `offshoot-fanout link — set/create the parent remote on repo(s)
@@ -213,6 +259,7 @@ const CONFIG_USAGE = `offshoot-fanout config — show or write a repo's config, 
 Usage:
   offshoot-fanout config show [--repo <path>]
   offshoot-fanout config set --file <path> [--repo <path>]
+  offshoot-fanout config stem [--from-remote | --set <owner/name> | --root] [--repo <path>]
 
 Config lives on a branch (default \`${DEFAULT_CONFIG_BRANCH}\`), in \`${CONFIG_FILE}\`, so the template's working
 tree carries no offshoot-specific file. It is read with \`git show\` (never checked out) and falls
@@ -223,9 +270,29 @@ the defaults stays completely free of offshoot references.
 tree, index and current branch are never touched, and the orphan branch is created if absent.
 
     {
+      "stem": "github:wighawag/template-svelte-tailwind",
       "branches": {"main": {}, "variant/full": {"stem": "main"}},
       "verify": "pnpm install && pnpm --filter ./web check"
     }
+
+The top-level \`stem\` names the PARENT REPO, as \`provider:owner/name\` (or a URL on a self-hosted
+host); \`null\` declares this repo the ROOT. It is the one relationship the tool could not see: the
+parent lived only in a local git remote, so a tree's shape died with the machine that held it. With
+it, \`offshoot-fanout clone <root>\` rebuilds the whole tree from the host alone. Note the two scopes
+of the word: top-level \`stem\` is a REPO, \`branches.<name>.stem\` is a branch in THIS repo.
+
+PRECEDENCE: the \`stem\` REMOTE still wins for merging whenever it exists. It is what git actually
+fetches, and pointing it at a sibling checkout on disk is the normal way to work on a tree locally,
+so a published id must never silently retarget a merge. The config is the portable truth and the
+fallback. Absence stays valid forever: every tree that exists today has no \`stem\` field. When the
+two disagree it is reported (\`config show\`, \`clone\`), never silently resolved — a local-path
+remote is compared through its own \`origin\` first, so a local checkout of the right parent is not
+drift.
+
+\`config stem\` records it, preserving everything else in the file. \`--from-remote\` reads the repo's
+existing \`stem\` remote and publishes it, which is the migration for a tree whose edges exist only
+on one machine. It writes locally like \`set\`; push the config branch yourself when it looks right
+(\`git push origin ${DEFAULT_CONFIG_BRANCH}\`).
 
 \`branches\` is opt-in: when present, ONLY the listed branches participate, which is how scratch and
 unrelated branches stay out of the cascade without being named. A branch with no \`stem\` is a root
@@ -269,6 +336,7 @@ const TOP_USAGE = `offshoot-fanout — keep a template tree's stems current, fro
 
 Subcommands:
   fanout          propagate a change DOWN the hierarchy (default)
+  clone           rebuild a whole tree on a bare machine, from one repo name
   status          one-command triage of a wired hierarchy (read-only)
   drift           list descendant commits not yet in their parent (candidate backports)
   backport        cherry-pick a descendant commit UP onto an ancestor (its home), optionally cascade
@@ -278,8 +346,10 @@ Subcommands:
   config          show or write a repo's config (which lives on an orphan branch)
 
 Run \`offshoot-fanout <subcommand> --help\` for details. The parent-template remote is named \`stem\`
-by default (\`--remote\` overrides it). A saved hierarchy lives at ~/.offshoot-stems/<root>.json
-(write one with \`discover --save\`; use it elsewhere with \`--registry\`).
+by default (\`--remote\` overrides it). Each repo can also PUBLISH its parent in its config
+(\`config stem\`), which is what makes a tree reconstructible with \`clone\` from its host alone.
+A saved hierarchy lives at ~/.offshoot-stems/<root>.json (write one with \`discover --save\`; use it
+elsewhere with \`--registry\`) — that file stays LOCAL state: filesystem paths and your \`ignore\` list.
 
 The maintainer-side companion to \`offshoot\`: where \`offshoot\` lets a single descendant pull in template
 updates (orphan branch + transform, no shared history), \`offshoot-fanout\` pushes one change to every
@@ -302,6 +372,8 @@ function usageFor(sub: string): string {
 			return STATUS_USAGE;
 		case 'config':
 			return CONFIG_USAGE;
+		case 'clone':
+			return CLONE_USAGE;
 		case 'skills':
 			return SKILLS_USAGE;
 		default:
@@ -388,6 +460,8 @@ export async function main(): Promise<number> {
 			return runStatus(rest);
 		case 'config':
 			return runConfig(rest);
+		case 'clone':
+			return runClone(rest);
 		case 'skills':
 			return runSkills(rest);
 		default:
@@ -760,13 +834,17 @@ function runConfig(rest: string[]): number {
 	const {values, positionals} = parseOpts(rest, {
 		repo: {type: 'string'},
 		file: {type: 'string'},
+		set: {type: 'string'},
+		root: {type: 'boolean', default: false},
+		'from-remote': {type: 'boolean', default: false},
+		remote: {type: 'string', default: DEFAULT_REMOTE},
 		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
 		'no-config': {type: 'boolean', default: false},
 	});
 	const verb = positionals[0] ?? 'show';
-	if (verb !== 'show' && verb !== 'set') {
+	if (verb !== 'show' && verb !== 'set' && verb !== 'stem') {
 		console.error(
-			`Unknown config command \`${verb}\`. Try \`show\` or \`set\`.`,
+			`Unknown config command \`${verb}\`. Try \`show\`, \`set\` or \`stem\`.`,
 		);
 		return 2;
 	}
@@ -774,6 +852,7 @@ function runConfig(rest: string[]): number {
 		(values.repo as string | undefined) ?? process.cwd(),
 	);
 	const configBranch = values['config-branch'] as string;
+	const remoteName = values.remote as string;
 
 	if (verb === 'set') {
 		const file = values.file as string | undefined;
@@ -788,17 +867,59 @@ function runConfig(rest: string[]): number {
 		return result.ok ? 0 : 1;
 	}
 
+	if (verb === 'stem') {
+		const explicit = values.set as string | undefined;
+		const asRoot = values.root as boolean;
+		const fromRemote =
+			(values['from-remote'] as boolean) || (!explicit && !asRoot);
+		if (explicit && asRoot) {
+			console.error('config stem: --set and --root are mutually exclusive.');
+			return 1;
+		}
+
+		let value: string | null;
+		if (asRoot) {
+			value = null;
+		} else if (explicit) {
+			value = explicit;
+		} else {
+			const remoteUrl = repoFromPath(repoPath, remoteName).originalUrl;
+			if (!remoteUrl) {
+				console.error(
+					`config stem: ${repoPath} has no \`${remoteName}\` remote to read. ` +
+						'Pass --set <owner/name>, or --root if this repo is the top of its tree.',
+				);
+				return 1;
+			}
+			// A local-path remote names a checkout, which means nothing to anyone
+			// else: publish what that checkout's `origin` says instead.
+			value = comparableRemote(remoteUrl);
+			if (value !== remoteUrl) {
+				console.log(
+					`  \`${remoteName}\` points at the local clone ${remoteUrl}; publishing its origin instead`,
+				);
+			}
+		}
+
+		if (fromRemote && value === null && !asRoot) return 1;
+		const result = setStem(repoPath, value, {branch: configBranch});
+		console.log(`${result.ok ? '✓' : '!'} ${repoPath} — ${result.message}`);
+		if (result.ok && result.commit) {
+			console.log(
+				`  push it with: git -C ${repoPath} push origin ${configBranch}`,
+			);
+		}
+		return result.ok ? 0 : 1;
+	}
+
 	const useConfig = !values['no-config'];
 	const resolved = resolveConfig(repoPath, {
 		branch: configBranch,
 		enabled: useConfig,
 	});
-	const repo = {
-		name: path.basename(repoPath),
-		path: repoPath,
-		originUrl: null,
-		originalUrl: null,
-	};
+	// Read the real remotes: the resolved parent is the point of `show`, and it
+	// cannot be reported without knowing what the `stem` remote actually says.
+	const repo = repoFromPath(repoPath, remoteName);
 	const plan = planRepo(repo, {configBranch, useConfig});
 
 	console.log(`${repo.name}  (${repoPath})`);
@@ -827,6 +948,46 @@ function runConfig(rest: string[]): number {
 			);
 	}
 
+	const parent = resolveParent({
+		remoteUrl: repo.originalUrl,
+		...(resolved.config && 'stem' in resolved.config
+			? {configStem: resolved.config.stem}
+			: {}),
+		remoteName,
+	});
+	console.log('\n  parent repo:');
+	switch (parent.source) {
+		case 'both':
+			console.log(
+				`    ${parent.id}  (config; \`${remoteName}\` remote agrees)`,
+			);
+			break;
+		case 'config':
+			console.log(
+				`    ${parent.id}  (config; no \`${remoteName}\` remote here yet)`,
+			);
+			break;
+		case 'remote':
+			console.log(`    ${parent.url}  (\`${remoteName}\` remote only)`);
+			console.log(
+				`    ! not published: this edge exists only on this machine. \`config stem --from-remote\` fixes that.`,
+			);
+			break;
+		case 'mismatch':
+			console.log(`    ! MISMATCH, using the remote (it is what git fetches)`);
+			console.log(`      config: ${parent.conflict?.config}`);
+			console.log(`      remote: ${parent.conflict?.remote}`);
+			break;
+		case 'declared-root':
+			console.log('    none: config declares this repo the root of its tree');
+			break;
+		default:
+			console.log(
+				`    unknown: no \`${remoteName}\` remote and no \`stem\` in the config`,
+			);
+	}
+	if (parent.error) console.log(`    ! ${parent.error}`);
+
 	console.log('\n  resolved nodes:');
 	if (plan.error) {
 		console.log(`    ! ${plan.error}`);
@@ -846,6 +1007,136 @@ function runConfig(rest: string[]): number {
 		`  verify: ${plan.verify ? `${plan.verify}   (only runs with --verify)` : 'none'}`,
 	);
 	return resolved.source === 'error' ? 1 : 0;
+}
+
+async function runClone(rest: string[]): Promise<number> {
+	const {values, positionals} = parseOpts(rest, {
+		dir: {type: 'string'},
+		remote: {type: 'string', default: DEFAULT_REMOTE},
+		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
+		protocol: {type: 'string'},
+		'require-auth': {type: 'boolean', default: false},
+		'dry-run': {type: 'boolean', default: false},
+		'no-color': {type: 'boolean', default: false},
+	});
+
+	const root = positionals[0];
+	if (!root) {
+		console.error(
+			'clone: give the root repo, e.g. `offshoot-fanout clone wighawag/template-svelte`.',
+		);
+		return 1;
+	}
+	const protocol = values.protocol as string | undefined;
+	if (protocol && protocol !== 'ssh' && protocol !== 'https') {
+		console.error(
+			`clone: --protocol must be ssh or https (got \`${protocol}\`).`,
+		);
+		return 1;
+	}
+
+	const dryRun = values['dry-run'] as boolean;
+	let result;
+	try {
+		result = await cloneTree(root, {
+			...(values.dir ? {dir: values.dir as string} : {}),
+			configBranch: values['config-branch'] as string,
+			remote: values.remote as string,
+			...(protocol ? {protocol: protocol as 'ssh' | 'https'} : {}),
+			requireAuth: values['require-auth'] as boolean,
+			dryRun,
+			onProgress: (line) => console.log(`  ${line}`),
+		});
+	} catch (e) {
+		console.error(`! ${e instanceof Error ? e.message : String(e)}`);
+		return 1;
+	}
+
+	console.log(
+		`\n${result.root}  (root commit ${result.rootCommits.map((c) => c.slice(0, 10)).join(', ')})`,
+	);
+
+	// Index children by their parent's `owner/name`, so a stem written as an id,
+	// a URL or a bare pair all land under the same key.
+	const byParent = new Map<string, typeof result.members>();
+	for (const m of result.members) {
+		if (m.status !== 'member' || !m.stem) continue;
+		const key = parseStem(m.stem).path.toLowerCase();
+		byParent.set(key, [...(byParent.get(key) ?? []), m]);
+	}
+	const wiredFor = new Map(result.outcomes.map((o) => [o.member.fullName, o]));
+
+	console.log('\n  tree:');
+	const walk = (fullName: string, depth: number): void => {
+		const outcome = wiredFor.get(fullName);
+		const mark = outcome
+			? outcome.action === 'cloned'
+				? dryRun
+					? 'would clone'
+					: 'cloned'
+				: outcome.action
+			: '';
+		console.log(
+			`    ${'  '.repeat(depth)}${fullName}${mark ? `  (${mark})` : ''}`,
+		);
+		if (outcome?.message) {
+			console.log(`    ${'  '.repeat(depth)}  ! ${outcome.message}`);
+		}
+		for (const child of byParent.get(fullName.toLowerCase()) ?? []) {
+			walk(child.fullName, depth + 1);
+		}
+	};
+	const rootMember = result.members.find((m) => m.status === 'root');
+	if (rootMember) walk(rootMember.fullName, 0);
+
+	const discarded = result.members.filter(
+		(m) => m.status === 'unannotated' || m.status === 'foreign-root',
+	);
+	if (discarded.length > 0) {
+		console.log(
+			'\n  discarded (share the root commit, not part of this tree):',
+		);
+		for (const m of discarded) console.log(`    ${m.fullName} — ${m.reason}`);
+	}
+
+	const unreadable = result.members.filter((m) => m.status === 'unreadable');
+	if (unreadable.length > 0) {
+		console.log('\n  could not be read:');
+		for (const m of unreadable)
+			console.log(`    ! ${m.fullName} — ${m.reason}`);
+	}
+
+	if (result.dangling.length > 0) {
+		console.log('\n  edges pointing outside the discovered set:');
+		for (const d of result.dangling) {
+			console.log(`    ! ${d.repo} stems from ${d.stem}, which was not found`);
+		}
+	}
+	if (result.incomplete) {
+		console.log(
+			'\n  ! the host reported its search results as incomplete: some members may be missing.',
+		);
+	}
+	if (result.auth === 'none') {
+		// Silence here would be a lie: an unauthenticated search cannot see a
+		// private member at all, so the tree above would look complete while a
+		// whole branch of it was invisible. Measured on a real tree: 12 repos
+		// found unauthenticated, 17 with a token.
+		console.log(
+			'\n  ! running UNAUTHENTICATED, so PRIVATE members of this tree were invisible — and an',
+		);
+		console.log(
+			'    incomplete tree looks exactly like a complete one. Run `gh auth login`, or set',
+		);
+		console.log(
+			'    GITHUB_TOKEN, then re-run. Use --require-auth to make this a hard failure.',
+		);
+	} else {
+		console.log(`\n  authenticated via ${result.auth}`);
+	}
+
+	const failed = result.outcomes.filter((o) => o.action === 'failed');
+	return failed.length > 0 || unreadable.length > 0 ? 1 : 0;
 }
 
 function runSkills(rest: string[]): number {

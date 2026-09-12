@@ -36,6 +36,7 @@ export {
 	renameRemotes,
 	ancestryRepo,
 	discoverAncestry,
+	repoFromPath,
 	registryDir,
 	registryPath,
 	saveRegistry,
@@ -53,10 +54,49 @@ export type {
 	WriteConfigOptions,
 	WriteConfigResult,
 } from './config.js';
+export type {
+	ParentSource,
+	ResolvedParent,
+	ResolveParentOptions,
+	StemId,
+	StemProtocol,
+} from './stem.js';
+export {
+	parseStem,
+	protocolOf,
+	resolveParent,
+	sameRepo,
+	stemUrl,
+	comparableRemote,
+} from './stem.js';
+export type {
+	HostOptions,
+	HostSearchResult,
+	ResolvedToken,
+	TokenSource,
+} from './host.js';
+export {
+	searchReposByCommit,
+	fetchFileFromBranch,
+	fetchRepoInfo,
+	resolveToken,
+} from './host.js';
+export type {
+	CloneAction,
+	CloneOutcome,
+	CloneTreeOptions,
+	CloneTreeResult,
+	ConfigReader,
+	MemberStatus,
+	TreeMember,
+} from './clone.js';
+export {classifyMembers, cloneTree, rootCommitsOf} from './clone.js';
 export {
 	CONFIG_FILE,
 	DEFAULT_CONFIG_BRANCH,
 	resolveConfig,
+	serializeConfig,
+	setStem,
 	writeConfig,
 } from './config.js';
 export type {
