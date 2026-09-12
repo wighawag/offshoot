@@ -263,6 +263,14 @@ A repo that shares the root commit but has **no `stem` field is discarded**, and
 
 Re-running is safe: an existing clone with the right `origin` is kept and only re-wired, and a `stem` remote already pointing elsewhere is never clobbered.
 
+You can ask for any node, not just the true root, and get the subtree beneath it. The rest of the family shares the same root commit and so is discovered too, but it is listed rather than cloned:
+
+```bash
+offshoot-fanout clone wighawag/template-commit-reveal   # 2 repos, not the whole tree of 11
+```
+
+Clones use **ssh** by default (or `gh`'s `git_protocol` when that says https, or `--prefer-https`). That is not a style preference: discovery is authenticated and therefore sees private members, and an https clone of a private repo fails asking for a username a script cannot answer. ssh uses the key you already push with, so whatever the discovery step can see, the clone step can fetch.
+
 ### Authentication is not optional for a tree with private members
 
 An unauthenticated commit search **cannot see private repos at all, and does not say so**. It returns a smaller answer that looks complete. On the tree this was built against, that is 12 repos found instead of 17.

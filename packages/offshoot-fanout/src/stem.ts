@@ -18,6 +18,7 @@
  * name a parent the same way.
  */
 
+import {spawnSync} from 'node:child_process';
 import {getRemoteUrl, isGitRepo} from './git.js';
 import {normalizeUrl} from './repo.js';
 
@@ -174,6 +175,27 @@ export function stemUrl(
 export function protocolOf(url: string | null): StemProtocol {
 	if (!url) return 'https';
 	return url.startsWith('git@') || url.startsWith('ssh://') ? 'ssh' : 'https';
+}
+
+/**
+ * The protocol to clone with when nothing else has decided: ask `gh` what the
+ * user already uses for git operations, and default to ssh otherwise.
+ *
+ * Defaulting to https is the trap this avoids. Discovery is authenticated (it
+ * reads a token, often from `gh`), so it happily FINDS private members, and an
+ * https clone of a private repo then fails asking for a username that no
+ * non-interactive run can supply. Observed exactly that: a private member was
+ * discovered, listed in the tree, and failed to clone while its ten public
+ * siblings succeeded. ssh uses the key the maintainer already pushes with, so
+ * the thing that can see the tree can also fetch it.
+ */
+export function preferredProtocol(host = 'github.com'): StemProtocol {
+	const r = spawnSync('gh', ['config', 'get', 'git_protocol', '--host', host], {
+		encoding: 'utf8',
+	});
+	const configured = r.status === 0 ? r.stdout.trim() : '';
+	if (configured === 'https') return 'https';
+	return 'ssh';
 }
 
 /** Same repository, comparing across ssh/https/case/`.git`. */

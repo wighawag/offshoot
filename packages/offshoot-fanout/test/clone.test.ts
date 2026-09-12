@@ -8,7 +8,7 @@
  */
 
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {classifyMembers, resolveToken} from '../src/index.js';
+import {classifyMembers, descendantsOf, resolveToken} from '../src/index.js';
 import type {TreeMember} from '../src/index.js';
 
 /** A fake host: repo full name -> raw config text (or null for "no config"). */
@@ -22,6 +22,67 @@ const stem = (parent: string) => JSON.stringify({stem: parent});
 function byName(members: TreeMember[]): Record<string, TreeMember> {
 	return Object.fromEntries(members.map((m) => [m.fullName, m]));
 }
+
+describe('descendantsOf', () => {
+	// The whole family shares the root commit, so discovery from ANY member sees
+	// all of them. Asking for a subtree must not quietly clone the family.
+	const family = async () =>
+		(
+			await classifyMembers(
+				'wighawag/template-svelte',
+				[
+					'wighawag/template-svelte',
+					'wighawag/template-svelte-tailwind',
+					'wighawag/blog',
+					'wighawag/jolly-roger',
+					'wighawag/bleeps',
+				],
+				reader({
+					'wighawag/template-svelte': JSON.stringify({stem: null}),
+					'wighawag/template-svelte-tailwind': stem('wighawag/template-svelte'),
+					'wighawag/blog': stem('wighawag/template-svelte-tailwind'),
+					'wighawag/jolly-roger': stem('wighawag/template-svelte-tailwind'),
+					'wighawag/bleeps': stem('wighawag/jolly-roger'),
+				}),
+			)
+		).members;
+
+	it('takes the whole tree from the true root', async () => {
+		expect(descendantsOf('wighawag/template-svelte', await family()).size).toBe(
+			5,
+		);
+	});
+
+	it('excludes ancestors and siblings when a subtree is requested', async () => {
+		const members = await family();
+		// Re-root: jolly-roger is the request, so its parent and its parent's other
+		// child are family, not subtree.
+		const reachable = descendantsOf('wighawag/jolly-roger', members);
+		expect([...reachable].sort()).toEqual([
+			'wighawag/bleeps',
+			'wighawag/jolly-roger',
+		]);
+		expect(reachable.has('wighawag/blog')).toBe(false);
+		expect(reachable.has('wighawag/template-svelte-tailwind')).toBe(false);
+	});
+
+	it('terminates on a cycle rather than spinning', async () => {
+		const {members} = await classifyMembers(
+			'wighawag/a',
+			['wighawag/a', 'wighawag/b', 'wighawag/c'],
+			reader({
+				'wighawag/a': stem('wighawag/c'),
+				'wighawag/b': stem('wighawag/a'),
+				'wighawag/c': stem('wighawag/b'),
+			}),
+		);
+		expect([...descendantsOf('wighawag/a', members)].sort()).toEqual([
+			'wighawag/a',
+			'wighawag/b',
+			'wighawag/c',
+		]);
+	});
+});
 
 describe('resolveToken', () => {
 	const saved = {

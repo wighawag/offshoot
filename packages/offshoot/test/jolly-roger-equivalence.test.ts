@@ -59,6 +59,17 @@ const CLEAN_NAME = 'my-pirate-app';
 const PINNED_REF = '3890d482dc8a0411be07ff981a2eb878563000d2';
 
 /**
+ * The pinned template as a source string, for the cases that go through the
+ * public `scaffold()` entry point rather than the pre-fetched `templateDir`.
+ * Those cases resolve the ref themselves, so leaving the ref off silently opts
+ * them back into live `main` and the pin above stops protecting them: on
+ * 2026-09-06 jolly-roger rewrote its e2e suite to read the app name from
+ * `web-config.json` instead of spelling it out, and the next publish from this
+ * monorepo failed on an assertion about a template file nobody here had touched.
+ */
+const PINNED_TEMPLATE = `${TEMPLATE}#${PINNED_REF}`;
+
+/**
  * The occurrences `offshoot rename` changes that create-jolly-roger's *anchored*
  * pattern list does not, at PINNED_REF. These are places the template name
  * appears that no anchored pattern targets, so create-jolly-roger leaves the
@@ -262,7 +273,7 @@ describeOnline('acceptance: equivalence with create-jolly-roger', () => {
 	it('scaffolds end to end, exactly as the acceptance line reads', async () => {
 		const cwd = tempDir('offshoot-acceptance-');
 		const result = await scaffold({
-			template: TEMPLATE,
+			template: PINNED_TEMPLATE,
 			argv: [NAME],
 			cwd,
 			nonInteractive: true,

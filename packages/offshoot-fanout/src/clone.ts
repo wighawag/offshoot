@@ -29,7 +29,13 @@ import {
 	resolveToken,
 } from './host.js';
 import type {HostOptions, TokenSource} from './host.js';
-import {parseStem, protocolOf, sameRepo, stemUrl} from './stem.js';
+import {
+	parseStem,
+	preferredProtocol,
+	protocolOf,
+	sameRepo,
+	stemUrl,
+} from './stem.js';
 import type {StemId, StemProtocol} from './stem.js';
 
 export type MemberStatus =
@@ -97,6 +103,11 @@ export interface CloneTreeResult {
 	outcomes: CloneOutcome[];
 	/** `stem` values naming a repo that is not in the discovered set. */
 	dangling: {repo: string; stem: string}[];
+	/**
+	 * Annotated members of the same FAMILY that do not descend from the requested
+	 * root: siblings and ancestors. Reported, never cloned.
+	 */
+	outsideSubtree: string[];
 	/** The host said its own search result was truncated. */
 	incomplete: boolean;
 	/** Which credential was used, so a partial tree can be explained. */
@@ -266,18 +277,18 @@ export async function cloneTree(
 	// 1. The root has to exist locally, because only a real repo can tell us the
 	//    family's root commit. Everything else follows from that hash.
 	const rootDir = path.join(dir, root.name);
-	// Match the protocol already in use: an existing root clone decides it, else
-	// how the caller wrote the spec, else https. A tree half in ssh and half in
-	// https still works, but it reads like two trees.
+	// Match the protocol already in use, in order of how strongly each source
+	// knows: an existing root clone, then a spec written as a URL, then whatever
+	// `gh` says the user does for git operations (ssh unless told otherwise).
+	// A tree half in ssh and half in https still works, but it reads like two.
+	const specIsUrl = rootSpec.includes('://') || rootSpec.startsWith('git@');
 	const protocol: StemProtocol =
 		opts.protocol ??
 		(isGitRepo(rootDir)
 			? protocolOf(getRemoteUrl(rootDir, 'origin'))
-			: protocolOf(
-					rootSpec.includes('://') || rootSpec.startsWith('git@')
-						? rootSpec
-						: null,
-				));
+			: specIsUrl
+				? protocolOf(rootSpec)
+				: preferredProtocol(root.host));
 	const rootUrl = stemUrl(root, protocol);
 
 	// A dry run must still be able to REPORT the tree, and the probe it needs is
@@ -286,6 +297,10 @@ export async function cloneTree(
 	// enough to read the first commit, and nothing lands in the target directory.
 	let probeDir = rootDir;
 	let temporary: string | null = null;
+	// Remember that WE cloned the root: it is a real repo by the time the clone
+	// loop reaches it, and reporting "existing" for a repo this command just
+	// created reads as "nothing happened".
+	let clonedRoot = false;
 	if (!isGitRepo(rootDir)) {
 		if (opts.dryRun) {
 			temporary = fs.mkdtempSync(
@@ -310,6 +325,7 @@ export async function cloneTree(
 				throw new Error(
 					`cloning the root ${root.id} failed: ${r.stderr.trim()}`,
 				);
+			clonedRoot = true;
 		}
 	}
 
@@ -350,10 +366,23 @@ export async function cloneTree(
 		configBranch,
 	);
 
-	// 5. Clone and wire only what belongs.
+	// 5. Clone and wire only what belongs UNDER THE REQUESTED ROOT.
+	//
+	//    Membership in the family is not the same as being in this subtree. The
+	//    whole family shares the root commit, so `clone jolly-roger` sees its own
+	//    ancestors and their other children too, and cloning all of them would
+	//    silently turn a request for three repos into eleven.
+	const reachable = descendantsOf(rootFullName, members);
 	const keep = members.filter(
-		(m) => m.status === 'member' || m.status === 'root',
+		(m) =>
+			(m.status === 'member' || m.status === 'root') &&
+			reachable.has(m.fullName.toLowerCase()),
 	);
+	const outsideSubtree = members
+		.filter(
+			(m) => m.status === 'member' && !reachable.has(m.fullName.toLowerCase()),
+		)
+		.map((m) => m.fullName);
 	const outcomes: CloneOutcome[] = [];
 	for (const m of keep) {
 		const target = path.join(dir, m.name);
@@ -363,6 +392,16 @@ export async function cloneTree(
 
 		if (isGitRepo(target)) {
 			const origin = getRemoteUrl(target, 'origin');
+			if (m.status === 'root' && clonedRoot) {
+				outcomes.push({
+					member: m,
+					dir: target,
+					action: 'cloned',
+					wired: null,
+					message: null,
+				});
+				continue;
+			}
 			if (origin && !sameRepo(origin, url)) {
 				outcomes.push({
 					member: m,
@@ -427,7 +466,41 @@ export async function cloneTree(
 		members,
 		outcomes,
 		dangling,
+		outsideSubtree,
 		incomplete,
 		auth: auth.source,
 	};
+}
+
+/**
+ * The requested root plus everything that reaches it by following `stem` edges
+ * upward: the subtree the caller actually asked for.
+ *
+ * Walks DOWN from the root one generation at a time rather than following each
+ * member's parent chain, so a cycle introduced by a mis-annotated repo cannot
+ * spin: a repo is only ever added once, and only when its parent is already in.
+ */
+export function descendantsOf(
+	rootFullName: string,
+	members: TreeMember[],
+): Set<string> {
+	const childrenOf = new Map<string, TreeMember[]>();
+	for (const m of members) {
+		if (m.status !== 'member' || !m.stem) continue;
+		const key = parseStem(m.stem).path.toLowerCase();
+		childrenOf.set(key, [...(childrenOf.get(key) ?? []), m]);
+	}
+
+	const reachable = new Set([rootFullName.toLowerCase()]);
+	const queue = [rootFullName.toLowerCase()];
+	while (queue.length > 0) {
+		const next = queue.shift()!;
+		for (const child of childrenOf.get(next) ?? []) {
+			const key = child.fullName.toLowerCase();
+			if (reachable.has(key)) continue;
+			reachable.add(key);
+			queue.push(key);
+		}
+	}
+	return reachable;
 }

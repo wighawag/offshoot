@@ -135,7 +135,9 @@ Options:
   --dir <path>           where clones land (default: cwd)
   --remote <name>        remote to wire on each clone (default: ${DEFAULT_REMOTE})
   --config-branch <name> branch holding each repo's ${CONFIG_FILE} (default: ${DEFAULT_CONFIG_BRANCH})
-  --protocol <ssh|https> clone URL style (default: match the root clone, else https)
+  --protocol <ssh|https> clone URL style (default: match the root clone, else \`gh\`'s git_protocol,
+                         else ssh)
+  --prefer-https         shorthand for --protocol https
   --require-auth         fail unless a credential is found (see AUTH below)
   --dry-run              discover and report; clone nothing, wire nothing
   --no-color             plain text report (no ANSI escapes)
@@ -143,6 +145,11 @@ Options:
 
 Idempotent: an existing clone with the right \`origin\` is kept and only re-wired, so re-running this
 brings a machine back in sync. A \`stem\` remote already pointing somewhere else is never clobbered.
+
+PROTOCOL. ssh by default, because discovery is AUTHENTICATED and cloning must be able to reach
+everything discovery can see: an https clone of a private member fails asking for a username that a
+script cannot answer, so a public-only tree would come back looking like the whole one. \`gh\`'s
+configured \`git_protocol\` wins if it says https; \`--prefer-https\` forces it.
 
 AUTH. A credential is taken from GITHUB_TOKEN, then GH_TOKEN, then \`gh auth token\` — so if you are
 logged into the \`gh\` CLI, private members are included with no setup. This is not a nicety: an
@@ -1015,6 +1022,7 @@ async function runClone(rest: string[]): Promise<number> {
 		remote: {type: 'string', default: DEFAULT_REMOTE},
 		'config-branch': {type: 'string', default: DEFAULT_CONFIG_BRANCH},
 		protocol: {type: 'string'},
+		'prefer-https': {type: 'boolean', default: false},
 		'require-auth': {type: 'boolean', default: false},
 		'dry-run': {type: 'boolean', default: false},
 		'no-color': {type: 'boolean', default: false},
@@ -1027,7 +1035,10 @@ async function runClone(rest: string[]): Promise<number> {
 		);
 		return 1;
 	}
-	const protocol = values.protocol as string | undefined;
+	const preferHttps = values['prefer-https'] as boolean;
+	const protocol =
+		(values.protocol as string | undefined) ??
+		(preferHttps ? 'https' : undefined);
 	if (protocol && protocol !== 'ssh' && protocol !== 'https') {
 		console.error(
 			`clone: --protocol must be ssh or https (got \`${protocol}\`).`,
@@ -1088,6 +1099,13 @@ async function runClone(rest: string[]): Promise<number> {
 	};
 	const rootMember = result.members.find((m) => m.status === 'root');
 	if (rootMember) walk(rootMember.fullName, 0);
+
+	if (result.outsideSubtree.length > 0) {
+		console.log(
+			'\n  other members of this family, not under the requested root (not cloned):',
+		);
+		for (const name of result.outsideSubtree) console.log(`    ${name}`);
+	}
 
 	const discarded = result.members.filter(
 		(m) => m.status === 'unannotated' || m.status === 'foreign-root',

@@ -433,12 +433,12 @@ export function setStem(
 
 	const next: FanoutConfig = {...(existing.config ?? {}), stem};
 	let text: string;
+	let written: FanoutConfig;
 	try {
 		// Round-trip through validation so an invalid stem fails before anything
 		// is written, with the same message a reader would produce.
-		text = serializeConfig(
-			validate(JSON.parse(serializeConfig(next)) as unknown),
-		);
+		written = validate(JSON.parse(serializeConfig(next)) as unknown);
+		text = serializeConfig(written);
 	} catch (e) {
 		return fail(
 			`refusing to write an invalid config: ${
@@ -447,18 +447,19 @@ export function setStem(
 		);
 	}
 
+	// Report the CANONICAL value that lands in the file, not the raw string the
+	// caller passed: `--from-remote` hands in a clone URL, and echoing that back
+	// describes something other than what was written.
+	const recorded = stem === null ? '(root)' : `\`${written.stem}\``;
+
 	const before = existing.config ?? null;
-	if (
-		before &&
-		'stem' in before &&
-		before.stem === (stem === null ? null : next.stem)
-	) {
+	if (before && 'stem' in before && before.stem === written.stem) {
 		return {
 			ok: true,
 			branch,
 			commit: null,
 			created: false,
-			message: `already records stem ${stem === null ? '(root)' : `\`${next.stem}\``}; nothing to do`,
+			message: `already records stem ${recorded}; nothing to do`,
 		};
 	}
 
@@ -478,7 +479,7 @@ export function setStem(
 	args.push(
 		'-m',
 		opts.message ??
-			`offshoot-fanout: record stem ${stem === null ? '(root)' : next.stem}`,
+			`offshoot-fanout: record stem ${stem === null ? '(root)' : written.stem}`,
 	);
 	const commit = git(args, repoPath);
 	if (!commit.ok) return fail(`commit-tree failed: ${commit.stderr.trim()}`);
@@ -494,8 +495,6 @@ export function setStem(
 		branch,
 		commit: commitSha,
 		created,
-		message: `${created ? 'created' : 'updated'} \`${branch}\`:${CONFIG_FILE} with stem ${
-			stem === null ? '(root)' : `\`${next.stem}\``
-		} (${commitSha.slice(0, 8)})`,
+		message: `${created ? 'created' : 'updated'} \`${branch}\`:${CONFIG_FILE} with stem ${recorded} (${commitSha.slice(0, 8)})`,
 	};
 }

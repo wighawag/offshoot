@@ -90,7 +90,12 @@ export type {
 	MemberStatus,
 	TreeMember,
 } from './clone.js';
-export {classifyMembers, cloneTree, rootCommitsOf} from './clone.js';
+export {
+	classifyMembers,
+	cloneTree,
+	descendantsOf,
+	rootCommitsOf,
+} from './clone.js';
 export {
 	CONFIG_FILE,
 	DEFAULT_CONFIG_BRANCH,
